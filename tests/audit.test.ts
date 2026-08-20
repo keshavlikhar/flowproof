@@ -47,3 +47,11 @@ test("returns unknown rather than claiming proof when checksums are absent", () 
   assert.equal(report.overall, "unknown");
   assert.equal(report.results.find((result) => result.dimension === "correctness")?.status, "unknown");
 });
+
+test("does not pass a low-confidence partial cost estimate", () => {
+  const input = snapshot();
+  input.cost!.confidence = "low";
+  const report = audit(config, input);
+  assert.equal(report.overall, "unknown");
+  assert.equal(report.results.find((result) => result.dimension === "cost")?.status, "unknown");
+});

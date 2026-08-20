@@ -35,4 +35,10 @@ export function validateSnapshot(value: unknown): asserts value is Snapshot {
   object(value.target, "snapshot.target");
   object(value.source.tables, "snapshot.source.tables");
   object(value.target.tables, "snapshot.target.tables");
+  if (value.window !== undefined) {
+    object(value.window, "snapshot.window");
+    if (typeof value.window.since !== "string" || typeof value.window.until !== "string" || Number.isNaN(Date.parse(value.window.since)) || Number.isNaN(Date.parse(value.window.until))) {
+      throw new Error("snapshot.window must contain ISO-8601 since and until timestamps");
+    }
+  }
 }

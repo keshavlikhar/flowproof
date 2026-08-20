@@ -110,15 +110,25 @@ function costCheck(config: Config, snapshot: Snapshot): CheckResult {
   if (projected === undefined) return unknown("cost", undefined, "Monthly pipeline cost is not available.", "Collect warehouse, serverless, storage, and transfer usage, then apply the account's contracted rates.");
   const budget = config.pipeline.monthlyCostBudgetUsd;
   const passed = projected <= budget;
+  const confidence = snapshot.cost?.confidence;
+  const status: Status = !passed ? "fail" : confidence === "medium" || confidence === "high" ? "pass" : "unknown";
   return {
-    dimension: "cost", status: passed ? "pass" : "fail",
-    summary: passed ? `Projected monthly cost is within the $${budget.toFixed(2)} budget.` : `Projected monthly cost exceeds budget by $${(projected - budget).toFixed(2)}.`,
+    dimension: "cost", status,
+    summary: !passed
+      ? `Projected monthly cost exceeds budget by $${(projected - budget).toFixed(2)}.`
+      : status === "pass"
+        ? `Projected monthly cost is within the $${budget.toFixed(2)} budget.`
+        : "The partial cost estimate is within budget, but confidence is too low to prove cost control.",
     evidence: [
       { label: "projected monthly cost", expected: `<= $${budget.toFixed(2)}`, observed: `$${projected.toFixed(2)}` },
       { label: "estimation method", expected: "documented", observed: snapshot.cost?.method ?? "not documented" },
-      { label: "confidence", expected: "medium or high", observed: snapshot.cost?.confidence ?? "unknown" },
+      { label: "confidence", expected: "medium or high", observed: confidence ?? "unknown" },
     ],
-    recommendation: passed ? undefined : "Reduce refresh frequency or compute size, or explicitly approve a higher pipeline budget.",
+    recommendation: !passed
+      ? "Reduce refresh frequency or compute size, or explicitly approve a higher pipeline budget."
+      : status === "unknown"
+        ? "Include storage, transfer, and all pipeline compute before treating the budget check as proven."
+        : undefined,
   };
 }
 
@@ -138,7 +148,9 @@ export function audit(config: Config, snapshot: Snapshot): AuditReport {
     pipeline: config.pipeline.name,
     observedAt: snapshot.observedAt,
     overall,
-    scope: "Point-in-time evidence for configured tables and reconciliation windows; not a universal exactly-once guarantee.",
+    scope: snapshot.window
+      ? `Evidence for the closed window [${snapshot.window.since}, ${snapshot.window.until}); not a universal exactly-once guarantee.`
+      : "Point-in-time evidence for configured tables and reconciliation windows; not a universal exactly-once guarantee.",
     results,
   };
 }
