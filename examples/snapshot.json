@@ -1,0 +1,41 @@
+{
+  "observedAt": "2026-08-18T18:00:00Z",
+  "source": {
+    "tables": {
+      "public.orders": {
+        "name": "public.orders",
+        "columns": [
+          { "name": "id", "type": "bigint", "nullable": false },
+          { "name": "status", "type": "varchar", "nullable": false },
+          { "name": "updated_at", "type": "timestamptz", "nullable": false }
+        ],
+        "rowCount": 100000,
+        "distinctPrimaryKeys": 100000,
+        "maxFreshnessValue": "2026-08-18T17:59:40Z",
+        "checksum": "sha256:demo-orders-window"
+      }
+    }
+  },
+  "target": {
+    "tables": {
+      "RAW.ORDERS": {
+        "name": "RAW.ORDERS",
+        "columns": [
+          { "name": "id", "type": "number", "nullable": false },
+          { "name": "status", "type": "text", "nullable": false },
+          { "name": "updated_at", "type": "timestamp_tz", "nullable": false }
+        ],
+        "rowCount": 100000,
+        "distinctPrimaryKeys": 100000,
+        "maxFreshnessValue": "2026-08-18T17:58:55Z",
+        "checksum": "sha256:demo-orders-window"
+      }
+    }
+  },
+  "cost": {
+    "currentMonthlyUsd": 220,
+    "projectedMonthlyUsd": 275,
+    "method": "30-day tagged compute, serverless, storage, and transfer run-rate",
+    "confidence": "medium"
+  }
+}

@@ -1,0 +1,27 @@
+name: Bug report
+description: Report an incorrect result or unexpected behavior
+title: "bug: "
+labels: [bug]
+body:
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Observed behavior
+      description: Remove credentials, source rows, and customer identifiers.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal redacted reproduction
+      description: Include configuration and evidence shapes when safe.
+  - type: input
+    id: version
+    attributes:
+      label: FlowProof and Node.js versions

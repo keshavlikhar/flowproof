@@ -1,0 +1,15 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { validateConfig, validateSnapshot } from "../src/validate.ts";
+
+test("rejects a configuration without table mappings", () => {
+  assert.throws(() => validateConfig({
+    version: 1,
+    pipeline: { name: "orders", rowCountTolerancePercent: 0, maxLagSeconds: 60, monthlyCostBudgetUsd: 100 },
+    tables: [],
+  }), /at least one mapping/);
+});
+
+test("rejects a malformed snapshot timestamp", () => {
+  assert.throws(() => validateSnapshot({ observedAt: "yesterday", source: { tables: {} }, target: { tables: {} } }), /ISO-8601/);
+});

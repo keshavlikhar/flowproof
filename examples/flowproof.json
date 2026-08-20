@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "pipeline": {
+    "name": "postgres-orders-to-snowflake",
+    "rowCountTolerancePercent": 0,
+    "maxLagSeconds": 300,
+    "monthlyCostBudgetUsd": 500
+  },
+  "tables": [
+    {
+      "source": "public.orders",
+      "target": "RAW.ORDERS",
+      "primaryKey": ["id"],
+      "freshnessColumn": "updated_at"
+    }
+  ]
+}

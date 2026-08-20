@@ -1,0 +1,23 @@
+name: Feature request
+description: Propose a narrowly scoped evidence check or integration
+title: "feature: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: incident
+    attributes:
+      label: Incident or decision this would improve
+      description: Describe the real failure mode rather than only the proposed feature.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Deterministic evidence available
+      description: Which source and target facts could support the decision?
+    validations:
+      required: true
+  - type: textarea
+    id: semantics
+    attributes:
+      label: Suggested PASS, FAIL, and UNKNOWN semantics
