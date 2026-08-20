@@ -14,9 +14,11 @@ FlowProof is that thin control layer. It remains outside the data path and initi
 
 ## Prototype
 
-Node.js 22.6 or later is required. No packages are installed and no data is uploaded.
+Node.js 22.6 or later is required; Node.js 24 is used in CI. Install the locked dependencies before running the CLI. No source rows or credentials are uploaded by FlowProof.
 
 ```bash
+nvm use
+npm ci
 npm run audit
 npm run plan
 npm test
@@ -32,6 +34,30 @@ node src/cli.ts audit \
 
 Use `--json` for CI output. Exit codes are `0` for pass, `1` for fail, and `2` for unknown or invalid input.
 
+## Live verification (experimental)
+
+The `verify` command connects directly to PostgreSQL and Snowflake with the official Node.js drivers, collects aggregate evidence, and evaluates it without writing to either database. Use dedicated read-only credentials and start with a small non-production table.
+
+Copy `.env.example` to a Git-ignored `.env`, restrict its permissions, and replace the placeholders. FlowProof never writes credentials to a snapshot.
+
+```bash
+cp .env.example .env
+chmod 600 .env
+```
+
+An explicit closed time window is required to prevent an accidental whole-table scan and to avoid testing data that is still expected to arrive:
+
+```bash
+node --env-file=.env src/cli.ts verify \
+  --config examples/flowproof.json \
+  --since 2026-08-18T10:00:00Z \
+  --until 2026-08-18T10:15:00Z
+```
+
+Add `--save-snapshot evidence/orders.json` to retain the aggregate evidence locally with owner-only file permissions. FlowProof creates the directory but refuses to overwrite an existing snapshot. The `evidence/` directory is ignored by Git.
+
+The first live collector retrieves column metadata, windowed counts, distinct-key counts, and freshness watermarks. It intentionally reports content correctness as `UNKNOWN` until a cross-database canonical checksum is implemented. Cost is also `UNKNOWN` unless configured; the optional serverless-task estimate remains low-confidence because it excludes storage, transfer, and other compute.
+
 ## Proof model
 
 | Dimension | Evidence required | Pass condition |
@@ -44,14 +70,13 @@ Use `--json` for CI output. Exit codes are `0` for pass, `1` for fail, and `2` f
 
 ## What is intentionally missing
 
-- Live database drivers and credential handling
 - Automatic selection of safe reconciliation windows
 - Canonical cross-database checksum serialization
 - Snowflake Openflow and Postgres mirror status collectors
 - Contract-rate-aware cost attribution
 - GitHub Checks or Slack delivery
 
-Those should be built only after validating the evidence report with 3–5 Snowflake/PostgreSQL teams. The next engineering slice is a read-only collector that fills the same snapshot contract, first for one table and one connector type.
+Those should be built only after validating the evidence report and experimental collector with 3–5 Snowflake/PostgreSQL teams.
 
 ## Pilot success criteria
 

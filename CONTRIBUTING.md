@@ -4,9 +4,10 @@ FlowProof is intentionally evidence-first. A check may return `PASS` only when i
 
 ## Development
 
-Use Node.js 24 for parity with CI. The project has no runtime dependencies.
+Use Node.js 24 for parity with CI. Dependencies are locked in `package-lock.json`.
 
 ```bash
+nvm use
 npm ci
 npm run check
 ```

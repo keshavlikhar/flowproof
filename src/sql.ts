@@ -10,7 +10,7 @@ function splitTable(name: string): [string, string] {
 
 function identifier(name: string): string {
   if (!/^[A-Za-z_][A-Za-z0-9_$]*$/.test(name)) throw new Error(`Unsafe SQL identifier: ${name}`);
-  return `"${name}"`;
+  return name;
 }
 
 function postgresFor(mapping: TableMapping): string[] {
@@ -20,8 +20,8 @@ function postgresFor(mapping: TableMapping): string[] {
   const freshnessColumn = identifier(mapping.freshnessColumn);
   return [
     `SELECT column_name, data_type, is_nullable FROM information_schema.columns WHERE table_schema = '${schema}' AND table_name = '${table}' ORDER BY ordinal_position;`,
-    `SELECT COUNT(*) AS row_count, MAX(${freshnessColumn}) AS max_freshness FROM "${schema}"."${table}";`,
-    keyColumns.length ? `SELECT COUNT(DISTINCT ${distinctKeys}) AS distinct_primary_keys FROM "${schema}"."${table}";` : "-- No primary key configured.",
+    `SELECT COUNT(*) AS row_count, MAX(${freshnessColumn}) AS max_freshness FROM ${schema}.${table} WHERE ${freshnessColumn} >= '<SINCE_ISO>'::timestamptz AND ${freshnessColumn} < '<UNTIL_ISO>'::timestamptz;`,
+    keyColumns.length ? `SELECT COUNT(DISTINCT ${distinctKeys}) AS distinct_primary_keys FROM ${schema}.${table} WHERE ${freshnessColumn} >= '<SINCE_ISO>'::timestamptz AND ${freshnessColumn} < '<UNTIL_ISO>'::timestamptz;` : "-- No primary key configured.",
     `-- Add a bounded-window checksum using your database's canonical serialization for business columns.`,
   ];
 }
@@ -32,8 +32,8 @@ function snowflakeFor(mapping: TableMapping): string[] {
   const freshnessColumn = identifier(mapping.freshnessColumn);
   return [
     `SELECT column_name, data_type, is_nullable FROM INFORMATION_SCHEMA.COLUMNS WHERE table_schema = '${schema.toUpperCase()}' AND table_name = '${table.toUpperCase()}' ORDER BY ordinal_position;`,
-    `SELECT COUNT(*) AS row_count, MAX(${freshnessColumn}) AS max_freshness FROM "${schema}"."${table}";`,
-    keys.length ? `SELECT COUNT(DISTINCT ${keys.join(", ")}) AS distinct_primary_keys FROM "${schema}"."${table}";` : "-- No primary key configured.",
+    `SELECT COUNT(*) AS row_count, MAX(${freshnessColumn}) AS max_freshness FROM ${schema}.${table} WHERE ${freshnessColumn} >= TO_TIMESTAMP_TZ('<SINCE_ISO>') AND ${freshnessColumn} < TO_TIMESTAMP_TZ('<UNTIL_ISO>');`,
+    keys.length ? `SELECT COUNT(DISTINCT ${keys.join(", ")}) AS distinct_primary_keys FROM ${schema}.${table} WHERE ${freshnessColumn} >= TO_TIMESTAMP_TZ('<SINCE_ISO>') AND ${freshnessColumn} < TO_TIMESTAMP_TZ('<UNTIL_ISO>');` : "-- No primary key configured.",
     `-- Cost evidence (ACCOUNT_USAGE can lag): query warehouse, serverless task, storage, and transfer usage for this pipeline's tagged resources.`,
   ];
 }

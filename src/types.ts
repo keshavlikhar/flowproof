@@ -25,6 +25,7 @@ export interface CostObservation {
 
 export interface Snapshot {
   observedAt: string;
+  window?: { since: string; until: string };
   source: { tables: Record<string, TableObservation> };
   target: { tables: Record<string, TableObservation> };
   cost?: CostObservation;
