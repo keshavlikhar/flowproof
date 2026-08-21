@@ -1,4 +1,5 @@
-import type { Config, CostObservation, Snapshot, TableMapping, TableObservation } from "./types.ts";
+import { checksumQuery, parseChecksumBuckets } from "./checksum.ts";
+import type { Config, CostObservation, ReplicationObservation, Snapshot, TableMapping, TableObservation } from "./types.ts";
 import type { LiveClients, QueryClient } from "./clients.ts";
 
 export interface CollectionWindow {
@@ -35,6 +36,11 @@ function timestamp(value: unknown): string | undefined {
   return parsed.toISOString();
 }
 
+function optionalCount(value: unknown, label: string): number | undefined {
+  if (value === null || value === undefined) return undefined;
+  return count(value, label);
+}
+
 function postgresDistinct(keys: string[]): string {
   const safe = keys.map(identifier);
   if (!safe.length) return "NULL";
@@ -59,42 +65,122 @@ async function postgresObservation(client: QueryClient, mapping: TableMapping, w
     [window.since, window.until],
   );
   const metrics = metricsResult.rows[0] ?? {};
+  const columns = columnsResult.rows.map((row) => ({
+    name: String(field(row, "column_name")),
+    type: String(field(row, "data_type")),
+    nullable: String(field(row, "is_nullable")).toUpperCase() === "YES",
+  }));
+  let checksumSql: string | undefined;
+  let checksumUnavailableReason: string | undefined;
+  try {
+    checksumSql = checksumQuery(
+      "postgres",
+      mapping,
+      columns,
+      `${schema}.${name}`,
+      `${freshness} >= $1::timestamptz AND ${freshness} < $2::timestamptz`,
+    );
+  } catch (error) {
+    checksumUnavailableReason = error instanceof Error ? error.message : String(error);
+  }
+  const checksumBuckets = checksumSql
+    ? parseChecksumBuckets((await client.query(checksumSql, [window.since, window.until])).rows)
+    : undefined;
   return {
     name: mapping.source,
-    columns: columnsResult.rows.map((row) => ({
-      name: String(field(row, "column_name")),
-      type: String(field(row, "data_type")),
-      nullable: String(field(row, "is_nullable")).toUpperCase() === "YES",
-    })),
+    columns,
     rowCount: count(field(metrics, "row_count"), `${mapping.source} row count`),
     distinctPrimaryKeys: count(field(metrics, "distinct_primary_keys"), `${mapping.source} distinct key count`),
     maxFreshnessValue: timestamp(field(metrics, "max_freshness")),
+    checksumBuckets,
+    checksumUnavailableReason,
   };
 }
 
-async function snowflakeObservation(client: QueryClient, mapping: TableMapping, window: CollectionWindow): Promise<TableObservation> {
+async function snowflakeObservation(
+  client: QueryClient,
+  mapping: TableMapping,
+  sourceColumns: TableObservation["columns"],
+  window: CollectionWindow,
+): Promise<TableObservation> {
   const [schema, name] = table(mapping.target);
   const columnsResult = await client.query(
     "SELECT column_name, data_type, is_nullable FROM INFORMATION_SCHEMA.COLUMNS WHERE table_schema = ? AND table_name = ? ORDER BY ordinal_position",
     [schema.toUpperCase(), name.toUpperCase()],
   );
+  const columns = columnsResult.rows.map((row) => ({
+    name: String(field(row, "column_name")),
+    type: String(field(row, "data_type")),
+    nullable: String(field(row, "is_nullable")).toUpperCase() === "YES",
+  }));
+  const targetColumnNames = new Set(columns.map((column) => column.name.toLowerCase()));
   const freshness = identifier(mapping.freshnessColumn);
   const distinct = snowflakeDistinct(mapping.primaryKey);
+  const softDelete = mapping.targetSoftDeleteColumn ? identifier(mapping.targetSoftDeleteColumn) : undefined;
+  if (softDelete && !targetColumnNames.has(softDelete.toLowerCase())) {
+    throw new Error(`Configured soft-delete column ${softDelete} is missing from ${mapping.target}`);
+  }
+  const applyTimestamp = mapping.targetApplyTimestampColumn ? identifier(mapping.targetApplyTimestampColumn) : undefined;
+  if (applyTimestamp && !targetColumnNames.has(applyTimestamp.toLowerCase())) {
+    throw new Error(`Configured apply timestamp column ${applyTimestamp} is missing from ${mapping.target}`);
+  }
+  const activePredicate = softDelete ? ` AND COALESCE(${softDelete}, FALSE) = FALSE` : "";
+  const windowPredicate = `${freshness} >= TO_TIMESTAMP_TZ(?) AND ${freshness} < TO_TIMESTAMP_TZ(?)${activePredicate}`;
+  const deliveryLag = applyTimestamp
+    ? `MAX(GREATEST(0, DATEDIFF('second', ${freshness}, ${applyTimestamp})))`
+    : "NULL";
   const metricsResult = await client.query(
-    `SELECT COUNT(*) AS row_count, COUNT(DISTINCT ${distinct}) AS distinct_primary_keys, MAX(${freshness}) AS max_freshness FROM ${schema}.${name} WHERE ${freshness} >= TO_TIMESTAMP_TZ(?) AND ${freshness} < TO_TIMESTAMP_TZ(?)`,
+    `SELECT COUNT(*) AS row_count, COUNT(DISTINCT ${distinct}) AS distinct_primary_keys, MAX(${freshness}) AS max_freshness, ${deliveryLag} AS max_delivery_lag_seconds FROM ${schema}.${name} WHERE ${windowPredicate}`,
     [window.since, window.until],
   );
   const metrics = metricsResult.rows[0] ?? {};
+  let checksumSql: string | undefined;
+  let checksumUnavailableReason: string | undefined;
+  try {
+    checksumSql = checksumQuery("snowflake", mapping, sourceColumns, `${schema}.${name}`, windowPredicate);
+  } catch (error) {
+    checksumUnavailableReason = error instanceof Error ? error.message : String(error);
+  }
+  const checksumBuckets = checksumSql
+    ? parseChecksumBuckets((await client.query(checksumSql, [window.since, window.until])).rows)
+    : undefined;
   return {
     name: mapping.target,
-    columns: columnsResult.rows.map((row) => ({
-      name: String(field(row, "column_name")),
-      type: String(field(row, "data_type")),
-      nullable: String(field(row, "is_nullable")).toUpperCase() === "YES",
-    })),
+    columns,
     rowCount: count(field(metrics, "row_count"), `${mapping.target} row count`),
     distinctPrimaryKeys: count(field(metrics, "distinct_primary_keys"), `${mapping.target} distinct key count`),
     maxFreshnessValue: timestamp(field(metrics, "max_freshness")),
+    maxDeliveryLagSeconds: optionalCount(field(metrics, "max_delivery_lag_seconds"), `${mapping.target} delivery lag`),
+    checksumBuckets,
+    checksumUnavailableReason,
+    activeRowFilter: softDelete ? `${softDelete} = FALSE` : undefined,
+  };
+}
+
+async function replicationObservation(client: QueryClient, config: NonNullable<Config["replication"]>): Promise<ReplicationObservation> {
+  const result = await client.query(
+    `SELECT slot_name, active, restart_lsn::text AS restart_lsn,
+            confirmed_flush_lsn::text AS confirmed_flush_lsn,
+            pg_current_wal_lsn()::text AS current_wal_lsn,
+            pg_wal_lsn_diff(pg_current_wal_lsn(), confirmed_flush_lsn)::text AS unconfirmed_wal_bytes,
+            pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn)::text AS retained_wal_bytes,
+            wal_status
+     FROM pg_replication_slots
+     WHERE slot_name = $1 AND slot_type = 'logical'`,
+    [config.postgresSlotName],
+  );
+  const row = result.rows[0];
+  if (!row) return { slotName: config.postgresSlotName, found: false };
+  return {
+    slotName: String(field(row, "slot_name")),
+    found: true,
+    active: field(row, "active") === true || String(field(row, "active")).toLowerCase() === "true",
+    restartLsn: field(row, "restart_lsn") === null ? undefined : String(field(row, "restart_lsn")),
+    confirmedFlushLsn: field(row, "confirmed_flush_lsn") === null ? undefined : String(field(row, "confirmed_flush_lsn")),
+    currentWalLsn: field(row, "current_wal_lsn") === null ? undefined : String(field(row, "current_wal_lsn")),
+    unconfirmedWalBytes: optionalCount(field(row, "unconfirmed_wal_bytes"), "unconfirmed WAL bytes"),
+    retainedWalBytes: optionalCount(field(row, "retained_wal_bytes"), "retained WAL bytes"),
+    walStatus: field(row, "wal_status") === null ? undefined : String(field(row, "wal_status")),
   };
 }
 
@@ -132,14 +218,16 @@ export async function collectSnapshot(
   const source: Snapshot["source"] = { tables: {} };
   const target: Snapshot["target"] = { tables: {} };
   for (const mapping of config.tables) {
-    source.tables[mapping.source] = await postgresObservation(clients.postgres, mapping, window);
-    target.tables[mapping.target] = await snowflakeObservation(clients.snowflake, mapping, window);
+    const sourceObservation = await postgresObservation(clients.postgres, mapping, window);
+    source.tables[mapping.source] = sourceObservation;
+    target.tables[mapping.target] = await snowflakeObservation(clients.snowflake, mapping, sourceObservation.columns, window);
   }
   return {
     observedAt: until.toISOString(),
     window: { since: since.toISOString(), until: until.toISOString() },
     source,
     target,
+    replication: config.replication ? await replicationObservation(clients.postgres, config.replication) : undefined,
     cost: await costObservation(clients.snowflake, environment),
   };
 }

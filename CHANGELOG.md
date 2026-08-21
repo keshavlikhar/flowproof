@@ -6,6 +6,10 @@ This project follows Semantic Versioning. While the project is below `1.0.0`, mi
 
 - Added experimental read-only PostgreSQL and Snowflake live collectors.
 - Added bounded-window `verify` command and optional aggregate snapshot saving.
+- Added deterministic 256-bucket key and content checksums for closed reconciliation windows.
+- Added Openflow soft-delete filtering and target apply-lag evidence.
+- Added PostgreSQL logical replication-slot progress and retained-WAL risk checks.
+- Changed exactly-once evaluation to require matching key-set checksums instead of trusting equal counts.
 - Changed low-confidence cost estimates to `UNKNOWN` rather than `PASS`.
 
 ## 0.1.0 — 2026-08-19

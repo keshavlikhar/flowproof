@@ -1,5 +1,9 @@
 {
   "observedAt": "2026-08-18T18:00:00Z",
+  "window": {
+    "since": "2026-08-18T17:00:00Z",
+    "until": "2026-08-18T18:00:00Z"
+  },
   "source": {
     "tables": {
       "public.orders": {
@@ -12,7 +16,14 @@
         "rowCount": 100000,
         "distinctPrimaryKeys": 100000,
         "maxFreshnessValue": "2026-08-18T17:59:40Z",
-        "checksum": "sha256:demo-orders-window"
+        "checksumBuckets": [
+          {
+            "id": "a1",
+            "rowCount": 100000,
+            "keyChecksum": "md5:demo-orders-keys",
+            "contentChecksum": "md5:demo-orders-content"
+          }
+        ]
       }
     }
   },
@@ -23,14 +34,37 @@
         "columns": [
           { "name": "id", "type": "number", "nullable": false },
           { "name": "status", "type": "text", "nullable": false },
-          { "name": "updated_at", "type": "timestamp_tz", "nullable": false }
+          { "name": "updated_at", "type": "timestamp_tz", "nullable": false },
+          { "name": "_SNOWFLAKE_INSERTED_AT", "type": "timestamp_ntz", "nullable": false },
+          { "name": "_SNOWFLAKE_UPDATED_AT", "type": "timestamp_ntz", "nullable": false },
+          { "name": "_SNOWFLAKE_DELETED", "type": "boolean", "nullable": false }
         ],
         "rowCount": 100000,
         "distinctPrimaryKeys": 100000,
         "maxFreshnessValue": "2026-08-18T17:58:55Z",
-        "checksum": "sha256:demo-orders-window"
+        "maxDeliveryLagSeconds": 45,
+        "activeRowFilter": "_SNOWFLAKE_DELETED = FALSE",
+        "checksumBuckets": [
+          {
+            "id": "a1",
+            "rowCount": 100000,
+            "keyChecksum": "md5:demo-orders-keys",
+            "contentChecksum": "md5:demo-orders-content"
+          }
+        ]
       }
     }
+  },
+  "replication": {
+    "slotName": "snowflake_connector_example",
+    "found": true,
+    "active": true,
+    "restartLsn": "0/16B1000",
+    "confirmedFlushLsn": "0/16B5000",
+    "currentWalLsn": "0/16B5100",
+    "unconfirmedWalBytes": 256,
+    "retainedWalBytes": 16640,
+    "walStatus": "reserved"
   },
   "cost": {
     "currentMonthlyUsd": 220,

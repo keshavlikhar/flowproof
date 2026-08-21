@@ -6,12 +6,20 @@
     "maxLagSeconds": 300,
     "monthlyCostBudgetUsd": 500
   },
+  "replication": {
+    "postgresSlotName": "snowflake_connector_example",
+    "maxUnconfirmedWalBytes": 104857600,
+    "maxRetainedWalBytes": 1073741824
+  },
   "tables": [
     {
       "source": "public.orders",
       "target": "RAW.ORDERS",
       "primaryKey": ["id"],
-      "freshnessColumn": "updated_at"
+      "freshnessColumn": "updated_at",
+      "checksumColumns": ["id", "status", "updated_at"],
+      "targetSoftDeleteColumn": "_SNOWFLAKE_DELETED",
+      "targetApplyTimestampColumn": "_SNOWFLAKE_UPDATED_AT"
     }
   ]
 }

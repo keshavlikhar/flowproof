@@ -1,5 +1,5 @@
 export type Status = "pass" | "fail" | "unknown";
-export type Dimension = "correctness" | "exactly-once" | "timeliness" | "schema" | "cost";
+export type Dimension = "correctness" | "exactly-once" | "timeliness" | "schema" | "capture" | "cost";
 
 export interface Column {
   name: string;
@@ -13,7 +13,18 @@ export interface TableObservation {
   rowCount?: number;
   distinctPrimaryKeys?: number;
   maxFreshnessValue?: string;
+  maxDeliveryLagSeconds?: number;
   checksum?: string;
+  checksumBuckets?: ChecksumBucket[];
+  checksumUnavailableReason?: string;
+  activeRowFilter?: string;
+}
+
+export interface ChecksumBucket {
+  id: string;
+  rowCount: number;
+  keyChecksum: string;
+  contentChecksum: string;
 }
 
 export interface CostObservation {
@@ -28,7 +39,20 @@ export interface Snapshot {
   window?: { since: string; until: string };
   source: { tables: Record<string, TableObservation> };
   target: { tables: Record<string, TableObservation> };
+  replication?: ReplicationObservation;
   cost?: CostObservation;
+}
+
+export interface ReplicationObservation {
+  slotName: string;
+  found: boolean;
+  active?: boolean;
+  restartLsn?: string;
+  confirmedFlushLsn?: string;
+  currentWalLsn?: string;
+  unconfirmedWalBytes?: number;
+  retainedWalBytes?: number;
+  walStatus?: string;
 }
 
 export interface TableMapping {
@@ -36,6 +60,15 @@ export interface TableMapping {
   target: string;
   primaryKey: string[];
   freshnessColumn: string;
+  checksumColumns?: string[];
+  targetSoftDeleteColumn?: string;
+  targetApplyTimestampColumn?: string;
+}
+
+export interface ReplicationConfig {
+  postgresSlotName: string;
+  maxUnconfirmedWalBytes: number;
+  maxRetainedWalBytes: number;
 }
 
 export interface Config {
@@ -46,6 +79,7 @@ export interface Config {
     maxLagSeconds: number;
     monthlyCostBudgetUsd: number;
   };
+  replication?: ReplicationConfig;
   tables: TableMapping[];
 }
 
