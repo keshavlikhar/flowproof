@@ -16,6 +16,14 @@ export function validateConfig(value: unknown): asserts value is Config {
   finiteNonNegative(value.pipeline.rowCountTolerancePercent, "config.pipeline.rowCountTolerancePercent");
   finiteNonNegative(value.pipeline.maxLagSeconds, "config.pipeline.maxLagSeconds");
   finiteNonNegative(value.pipeline.monthlyCostBudgetUsd, "config.pipeline.monthlyCostBudgetUsd");
+  if (value.replication !== undefined) {
+    object(value.replication, "config.replication");
+    if (typeof value.replication.postgresSlotName !== "string" || !value.replication.postgresSlotName.trim()) {
+      throw new Error("config.replication.postgresSlotName is required");
+    }
+    finiteNonNegative(value.replication.maxUnconfirmedWalBytes, "config.replication.maxUnconfirmedWalBytes");
+    finiteNonNegative(value.replication.maxRetainedWalBytes, "config.replication.maxRetainedWalBytes");
+  }
   if (!Array.isArray(value.tables) || value.tables.length === 0) throw new Error("config.tables must contain at least one mapping");
   for (const [index, mapping] of value.tables.entries()) {
     object(mapping, `config.tables[${index}]`);
@@ -24,6 +32,14 @@ export function validateConfig(value: unknown): asserts value is Config {
     }
     if (!Array.isArray(mapping.primaryKey) || mapping.primaryKey.some((key) => typeof key !== "string" || !key)) {
       throw new Error(`config.tables[${index}].primaryKey must be an array of column names`);
+    }
+    if (mapping.checksumColumns !== undefined && (!Array.isArray(mapping.checksumColumns) || mapping.checksumColumns.length === 0 || mapping.checksumColumns.some((column) => typeof column !== "string" || !column))) {
+      throw new Error(`config.tables[${index}].checksumColumns must be a non-empty array of column names`);
+    }
+    for (const field of ["targetSoftDeleteColumn", "targetApplyTimestampColumn"] as const) {
+      if (mapping[field] !== undefined && (typeof mapping[field] !== "string" || !mapping[field])) {
+        throw new Error(`config.tables[${index}].${field} must be a column name`);
+      }
     }
   }
 }
