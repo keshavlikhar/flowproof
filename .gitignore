@@ -4,3 +4,4 @@ node_modules/
 .env.*
 !.env.example
 evidence/*.json
+pilot/postgres/pilot.env

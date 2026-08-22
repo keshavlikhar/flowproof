@@ -34,6 +34,10 @@ node src/cli.ts audit \
 
 Use `--json` for CI output. Exit codes are `0` for pass, `1` for fail, and `2` for unknown or invalid input.
 
+## Free functional pilot
+
+The [`pilot`](pilot/README.md) directory contains a local PostgreSQL 17 environment and a tightly limited Snowflake trial setup. It lets you exercise the live cross-database checks without attaching a payment method. Snowflake trial accounts do not include Openflow, so this validates FlowProof functionality but is explicitly not a real CDC proof.
+
 ## Live verification (experimental)
 
 The `verify` command connects directly to PostgreSQL and Snowflake with the official Node.js drivers, collects aggregate evidence, and evaluates it without writing to either database. Use dedicated read-only credentials and start with a small non-production table.

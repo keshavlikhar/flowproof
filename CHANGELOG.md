@@ -4,6 +4,9 @@ This project follows Semantic Versioning. While the project is below `1.0.0`, mi
 
 ## Unreleased
 
+- Added a free local PostgreSQL 17 pilot with logical replication settings, seeded data, and least-privilege users.
+- Added a Snowflake trial setup with X-Small compute, 60-second auto-suspend, and a one-credit resource monitor.
+- Documented that Snowflake trial accounts cannot run Openflow and that the free pilot simulates its target-table shape.
 - Added experimental read-only PostgreSQL and Snowflake live collectors.
 - Added bounded-window `verify` command and optional aggregate snapshot saving.
 - Added deterministic 256-bucket key and content checksums for closed reconciliation windows.

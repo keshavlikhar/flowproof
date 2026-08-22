@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "pipeline": {
+    "name": "free-functional-pilot",
+    "rowCountTolerancePercent": 0,
+    "maxLagSeconds": 300,
+    "monthlyCostBudgetUsd": 500
+  },
+  "tables": [
+    {
+      "source": "public.orders",
+      "target": "RAW.ORDERS",
+      "primaryKey": ["id"],
+      "freshnessColumn": "updated_at",
+      "checksumColumns": ["id", "status", "amount", "updated_at"],
+      "targetSoftDeleteColumn": "_SNOWFLAKE_DELETED",
+      "targetApplyTimestampColumn": "_SNOWFLAKE_UPDATED_AT"
+    }
+  ]
+}
