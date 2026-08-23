@@ -9,6 +9,7 @@ import type {
   TableMapping,
   TableObservation,
 } from "./types.ts";
+import { resolvePolicy } from "./policy.ts";
 
 const TYPE_FAMILIES: Record<string, string> = {
   smallint: "integer", bigint: "integer", int: "integer", integer: "integer", number: "number",
@@ -31,7 +32,7 @@ function compatibleType(sourceType: string, targetType: string): boolean {
 }
 
 function unknown(dimension: CheckResult["dimension"], table: string | undefined, summary: string, recommendation: string): CheckResult {
-  return { dimension, table, status: "unknown", summary, evidence: [], recommendation };
+  return { dimension, table, status: "unknown", blocking: false, summary, evidence: [], recommendation };
 }
 
 function bucketDifferences(
@@ -67,7 +68,7 @@ function schemaCheck(mapping: TableMapping, source?: TableObservation, target?: 
     }
   }
   return {
-    dimension: "schema", table: mapping.target, status: problems.length ? "fail" : "pass",
+    dimension: "schema", table: mapping.target, status: problems.length ? "fail" : "pass", blocking: false,
     summary: problems.length ? `Schema mismatch: ${problems.join("; ")}.` : "Source columns are present with compatible target types and nullability.",
     evidence: [{ label: "columns", expected: `${source.columns.length} compatible source columns`, observed: problems.length ? problems.join("; ") : "all compatible" }],
     recommendation: problems.length ? "Align the target table or explicitly approve and version the mapping." : undefined,
@@ -94,7 +95,7 @@ function correctnessCheck(mapping: TableMapping, source?: TableObservation, targ
     ? mismatchedBuckets.length ? `mismatch in buckets ${mismatchedBuckets.slice(0, 10).join(", ")}${mismatchedBuckets.length > 10 ? "…" : ""}` : `${source.checksumBuckets!.length} checksum bucket${source.checksumBuckets!.length === 1 ? "" : "s"} match`
     : target.checksum ?? target.checksumUnavailableReason ?? "not collected";
   return {
-    dimension: "correctness", table: mapping.target, status,
+    dimension: "correctness", table: mapping.target, status, blocking: false,
     summary: status === "pass" ? "Counts and deterministic checksums match." : status === "fail" ? "Source and target contents do not reconcile." : "Counts match, but content equality is not proven without checksums.",
     evidence: [
       { label: "row count", expected: String(source.rowCount), observed: `${target.rowCount} (${differencePercent.toFixed(2)}% difference)` },
@@ -104,10 +105,10 @@ function correctnessCheck(mapping: TableMapping, source?: TableObservation, targ
   };
 }
 
-function exactlyOnceCheck(mapping: TableMapping, source?: TableObservation, target?: TableObservation): CheckResult {
-  if (!mapping.primaryKey.length) return unknown("exactly-once", mapping.target, "No stable key is configured, so duplicate delivery cannot be tested.", "Configure a primary or idempotency key.");
+function deliveryIntegrityCheck(mapping: TableMapping, source?: TableObservation, target?: TableObservation): CheckResult {
+  if (!mapping.primaryKey.length) return unknown("delivery-integrity", mapping.target, "No stable key is configured, so duplicate and missing-key delivery cannot be tested.", "Configure a primary or idempotency key.");
   if (!source || !target || source.rowCount === undefined || target.rowCount === undefined || source.distinctPrimaryKeys === undefined || target.distinctPrimaryKeys === undefined) {
-    return unknown("exactly-once", mapping.target, "Duplicate and missing-key evidence is incomplete.", "Collect target row count, distinct primary-key count, and the matching source count.");
+    return unknown("delivery-integrity", mapping.target, "Duplicate and missing-key evidence is incomplete.", "Collect target row count, distinct primary-key count, and the matching source count.");
   }
   const sourceDuplicates = source.rowCount - source.distinctPrimaryKeys;
   const targetDuplicates = target.rowCount - target.distinctPrimaryKeys;
@@ -120,7 +121,7 @@ function exactlyOnceCheck(mapping: TableMapping, source?: TableObservation, targ
   const hasKnownFailure = sourceDuplicates !== 0 || targetDuplicates !== 0 || keyCountDelta !== 0 || mismatchedBuckets.length !== 0;
   const status: Status = hasKnownFailure ? "fail" : keyChecksumsAvailable ? "pass" : "unknown";
   return {
-    dimension: "exactly-once", table: mapping.target, status,
+    dimension: "delivery-integrity", table: mapping.target, status, blocking: false,
     summary: status === "pass"
       ? "The active source and target key sets match, with no duplicate keys in the checked window."
       : status === "fail"
@@ -140,7 +141,7 @@ function timelinessCheck(mapping: TableMapping, source?: TableObservation, targe
   if (target?.maxDeliveryLagSeconds !== undefined) {
     const passed = target.maxDeliveryLagSeconds <= maxLagSeconds;
     return {
-      dimension: "timeliness", table: mapping.target, status: passed ? "pass" : "fail",
+      dimension: "timeliness", table: mapping.target, status: passed ? "pass" : "fail", blocking: false,
       summary: passed
         ? `Maximum observed source-update-to-target-apply lag is ${target.maxDeliveryLagSeconds}s, within the SLA.`
         : `Maximum observed source-update-to-target-apply lag is ${target.maxDeliveryLagSeconds}s, above the ${maxLagSeconds}s SLA.`,
@@ -157,7 +158,7 @@ function timelinessCheck(mapping: TableMapping, source?: TableObservation, targe
   const lagSeconds = Math.max(0, (sourceTime - targetTime) / 1000);
   const definitelyBehind = lagSeconds > maxLagSeconds;
   return {
-    dimension: "timeliness", table: mapping.target, status: definitelyBehind ? "fail" : "unknown",
+    dimension: "timeliness", table: mapping.target, status: definitelyBehind ? "fail" : "unknown", blocking: false,
     summary: definitelyBehind
       ? `The target freshness watermark is ${lagSeconds}s behind the source, above the ${maxLagSeconds}s SLA.`
       : "Freshness watermarks are aligned, but they do not prove delivery latency without a target apply timestamp.",
@@ -166,23 +167,24 @@ function timelinessCheck(mapping: TableMapping, source?: TableObservation, targe
   };
 }
 
-function captureCheck(config: NonNullable<Config["replication"]>, snapshot: Snapshot): CheckResult {
+function captureCheck(config: Config["replication"], snapshot: Snapshot): CheckResult {
+  if (!config) return unknown("capture-health", undefined, "Replication capture health is not configured.", "Configure a PostgreSQL logical replication slot when connector-level capture evidence is available.");
   const observed = snapshot.replication;
-  if (!observed) return unknown("capture", undefined, "PostgreSQL replication-slot evidence was not collected.", "Collect the configured logical replication slot state from pg_replication_slots.");
+  if (!observed) return unknown("capture-health", undefined, "PostgreSQL replication-slot evidence was not collected.", "Collect the configured logical replication slot state from pg_replication_slots.");
   if (!observed.found) {
     return {
-      dimension: "capture", status: "fail", summary: `Logical replication slot ${config.postgresSlotName} was not found.`, evidence: [],
+      dimension: "capture-health", status: "fail", blocking: false, summary: `Logical replication slot ${config.postgresSlotName} was not found.`, evidence: [],
       recommendation: "Confirm the Openflow CaptureChangePostgreSQL processor's replication slot name and connector state.",
     };
   }
   const evidenceComplete = observed.active !== undefined && observed.unconfirmedWalBytes !== undefined && observed.retainedWalBytes !== undefined && observed.walStatus !== undefined;
-  if (!evidenceComplete) return unknown("capture", undefined, "The replication slot exists, but its progress evidence is incomplete.", "Collect active state, confirmed_flush_lsn, restart_lsn, and WAL byte differences.");
+  if (!evidenceComplete) return unknown("capture-health", undefined, "The replication slot exists, but its progress evidence is incomplete.", "Collect active state, confirmed_flush_lsn, restart_lsn, and WAL byte differences.");
   const unsafeStatus = observed.walStatus !== "reserved" && observed.walStatus !== "extended";
   const unconfirmedTooLarge = observed.unconfirmedWalBytes! > config.maxUnconfirmedWalBytes;
   const retainedTooLarge = observed.retainedWalBytes! > config.maxRetainedWalBytes;
   const passed = observed.active === true && !unsafeStatus && !unconfirmedTooLarge && !retainedTooLarge;
   return {
-    dimension: "capture", status: passed ? "pass" : "fail",
+    dimension: "capture-health", status: passed ? "pass" : "fail", blocking: false,
     summary: passed
       ? `Replication slot ${observed.slotName} is active and within configured WAL limits.`
       : `Replication slot ${observed.slotName} is inactive, unsafe, or beyond a configured WAL limit.`,
@@ -205,7 +207,7 @@ function costCheck(config: Config, snapshot: Snapshot): CheckResult {
   const confidence = snapshot.cost?.confidence;
   const status: Status = !passed ? "fail" : confidence === "medium" || confidence === "high" ? "pass" : "unknown";
   return {
-    dimension: "cost", status,
+    dimension: "cost", status, blocking: false,
     summary: !passed
       ? `Projected monthly cost exceeds budget by $${(projected - budget).toFixed(2)}.`
       : status === "pass"
@@ -231,16 +233,21 @@ export function audit(config: Config, snapshot: Snapshot): AuditReport {
     const target = snapshot.target.tables[mapping.target];
     results.push(schemaCheck(mapping, source, target));
     results.push(correctnessCheck(mapping, source, target, config.pipeline.rowCountTolerancePercent));
-    results.push(exactlyOnceCheck(mapping, source, target));
+    results.push(deliveryIntegrityCheck(mapping, source, target));
     results.push(timelinessCheck(mapping, source, target, config.pipeline.maxLagSeconds));
   }
-  if (config.replication) results.push(captureCheck(config.replication, snapshot));
+  if (config.version === 2 || config.replication) results.push(captureCheck(config.replication, snapshot));
   results.push(costCheck(config, snapshot));
-  const overall: Status = results.some((result) => result.status === "fail") ? "fail" : results.some((result) => result.status === "unknown") ? "unknown" : "pass";
+  const policy = resolvePolicy(config);
+  const required = new Set(policy.required);
+  for (const result of results) result.blocking = required.has(result.dimension);
+  const blockingResults = results.filter((result) => result.blocking);
+  const overall: Status = blockingResults.some((result) => result.status === "fail") ? "fail" : blockingResults.some((result) => result.status === "unknown") ? "unknown" : "pass";
   return {
     pipeline: config.pipeline.name,
     observedAt: snapshot.observedAt,
     overall,
+    policy,
     scope: snapshot.window
       ? `Evidence for the closed window [${snapshot.window.since}, ${snapshot.window.until}); not a universal exactly-once guarantee.`
       : "Point-in-time evidence for configured tables and reconciliation windows; not a universal exactly-once guarantee.",

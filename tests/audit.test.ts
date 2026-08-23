@@ -36,7 +36,7 @@ test("fails duplicates, late delivery, and budget excess", () => {
   input.cost!.projectedMonthlyUsd = 150;
   const report = audit(config, input);
   assert.equal(report.overall, "fail");
-  assert.equal(report.results.find((result) => result.dimension === "exactly-once")?.status, "fail");
+  assert.equal(report.results.find((result) => result.dimension === "delivery-integrity")?.status, "fail");
   assert.equal(report.results.find((result) => result.dimension === "timeliness")?.status, "fail");
   assert.equal(report.results.find((result) => result.dimension === "cost")?.status, "fail");
 });
@@ -48,14 +48,14 @@ test("returns unknown rather than claiming proof when checksums are absent", () 
   const report = audit(config, input);
   assert.equal(report.overall, "unknown");
   assert.equal(report.results.find((result) => result.dimension === "correctness")?.status, "unknown");
-  assert.equal(report.results.find((result) => result.dimension === "exactly-once")?.status, "unknown");
+  assert.equal(report.results.find((result) => result.dimension === "delivery-integrity")?.status, "unknown");
 });
 
 test("detects different keys even when row and distinct-key counts match", () => {
   const input = snapshot();
   input.target.tables["RAW.ORDERS"].checksumBuckets![0].keyChecksum = "same-count-different-keys";
   const report = audit(config, input);
-  assert.equal(report.results.find((result) => result.dimension === "exactly-once")?.status, "fail");
+  assert.equal(report.results.find((result) => result.dimension === "delivery-integrity")?.status, "fail");
 });
 
 test("rejects checksum evidence that does not cover every counted row", () => {
@@ -63,7 +63,7 @@ test("rejects checksum evidence that does not cover every counted row", () => {
   input.target.tables["RAW.ORDERS"].checksumBuckets![0].rowCount = 1;
   const report = audit(config, input);
   assert.equal(report.results.find((result) => result.dimension === "correctness")?.status, "fail");
-  assert.equal(report.results.find((result) => result.dimension === "exactly-once")?.status, "fail");
+  assert.equal(report.results.find((result) => result.dimension === "delivery-integrity")?.status, "fail");
 });
 
 test("fails an inactive or dangerously lagging replication slot", () => {
@@ -71,7 +71,22 @@ test("fails an inactive or dangerously lagging replication slot", () => {
   input.replication!.active = false;
   input.replication!.retainedWalBytes = 5000;
   const report = audit(config, input);
-  assert.equal(report.results.find((result) => result.dimension === "capture")?.status, "fail");
+  assert.equal(report.results.find((result) => result.dimension === "capture-health")?.status, "fail");
+});
+
+test("pilot policy passes supported checks while keeping unavailable cost visible", () => {
+  const pilot = structuredClone(config);
+  pilot.version = 2;
+  pilot.pipeline.policy = "pilot";
+  delete pilot.replication;
+  const input = snapshot();
+  delete input.replication;
+  delete input.cost;
+  const report = audit(pilot, input);
+  assert.equal(report.overall, "pass");
+  assert.equal(report.results.find((result) => result.dimension === "cost")?.status, "unknown");
+  assert.equal(report.results.find((result) => result.dimension === "cost")?.blocking, false);
+  assert.equal(report.results.find((result) => result.dimension === "capture-health")?.blocking, false);
 });
 
 test("does not pass a low-confidence partial cost estimate", () => {

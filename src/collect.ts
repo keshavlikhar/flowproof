@@ -223,6 +223,7 @@ export async function collectSnapshot(
     target.tables[mapping.target] = await snowflakeObservation(clients.snowflake, mapping, sourceObservation.columns, window);
   }
   return {
+    version: config.version,
     observedAt: until.toISOString(),
     window: { since: since.toISOString(), until: until.toISOString() },
     source,

@@ -1,5 +1,17 @@
 export type Status = "pass" | "fail" | "unknown";
-export type Dimension = "correctness" | "exactly-once" | "timeliness" | "schema" | "capture" | "cost";
+export type Dimension = "correctness" | "delivery-integrity" | "timeliness" | "schema" | "capture-health" | "cost";
+export type PolicyProfile = "pilot" | "production";
+
+export interface CustomPolicy {
+  required: Dimension[];
+  optional?: Dimension[];
+}
+
+export interface ResolvedPolicy {
+  name: PolicyProfile | "custom" | "legacy-v1";
+  required: Dimension[];
+  optional: Dimension[];
+}
 
 export interface Column {
   name: string;
@@ -35,6 +47,7 @@ export interface CostObservation {
 }
 
 export interface Snapshot {
+  version?: 1 | 2;
   observedAt: string;
   window?: { since: string; until: string };
   source: { tables: Record<string, TableObservation> };
@@ -72,9 +85,10 @@ export interface ReplicationConfig {
 }
 
 export interface Config {
-  version: 1;
+  version: 1 | 2;
   pipeline: {
     name: string;
+    policy?: PolicyProfile | CustomPolicy;
     rowCountTolerancePercent: number;
     maxLagSeconds: number;
     monthlyCostBudgetUsd: number;
@@ -92,6 +106,7 @@ export interface Evidence {
 export interface CheckResult {
   dimension: Dimension;
   status: Status;
+  blocking: boolean;
   table?: string;
   summary: string;
   evidence: Evidence[];
@@ -102,6 +117,7 @@ export interface AuditReport {
   pipeline: string;
   observedAt: string;
   overall: Status;
+  policy: ResolvedPolicy;
   scope: string;
   results: CheckResult[];
 }
