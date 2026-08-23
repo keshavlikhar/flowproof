@@ -36,3 +36,12 @@ test("rejects overlapping custom policy dimensions", () => {
     tables: [{ source: "public.orders", target: "RAW.ORDERS", primaryKey: ["id"], freshnessColumn: "updated_at" }],
   }), /both required and optional/);
 });
+
+test("refuses to present the native relay as a production connector", () => {
+  assert.throws(() => validateConfig({
+    version: 2,
+    pipeline: { name: "orders", policy: "pilot", rowCountTolerancePercent: 0, maxLagSeconds: 60, monthlyCostBudgetUsd: 100 },
+    relay: { testOnly: false, postgresSlotName: "slot", postgresPublicationName: "publication", snowflakeLedgerTable: "RAW.LEDGER" },
+    tables: [{ source: "public.orders", target: "RAW.ORDERS", primaryKey: ["id"], freshnessColumn: "updated_at" }],
+  }), /testOnly must be true/);
+});

@@ -17,6 +17,10 @@ export interface Column {
   name: string;
   type: string;
   nullable: boolean;
+  numericPrecision?: number;
+  numericScale?: number;
+  characterMaximumLength?: number;
+  datetimePrecision?: number;
 }
 
 export interface TableObservation {
@@ -25,11 +29,18 @@ export interface TableObservation {
   rowCount?: number;
   distinctPrimaryKeys?: number;
   maxFreshnessValue?: string;
+  minDeliveryLagSeconds?: number;
+  p95DeliveryLagSeconds?: number;
   maxDeliveryLagSeconds?: number;
+  deliveryLagRowCount?: number;
+  missingDeliveryTimestampCount?: number;
   checksum?: string;
   checksumBuckets?: ChecksumBucket[];
+  checksumBucketPrefixLength?: number;
   checksumUnavailableReason?: string;
   activeRowFilter?: string;
+  stableDuringCollection?: boolean;
+  stabilityEvidence?: string;
 }
 
 export interface ChecksumBucket {
@@ -44,16 +55,39 @@ export interface CostObservation {
   projectedMonthlyUsd?: number;
   method?: string;
   confidence?: "low" | "medium" | "high";
+  coverage?: "partial" | "complete";
+  components?: Array<{
+    name: string;
+    monthlyUsd?: number;
+    credits?: number;
+    source: string;
+    status: "measured" | "configured" | "unavailable";
+    dataThrough?: string;
+    reason?: string;
+  }>;
+  missingComponents?: string[];
 }
 
 export interface Snapshot {
   version?: 1 | 2;
   observedAt: string;
-  window?: { since: string; until: string };
-  source: { tables: Record<string, TableObservation> };
-  target: { tables: Record<string, TableObservation> };
+  window?: {
+    since: string;
+    until: string;
+    settleDelaySeconds?: number;
+    closed?: boolean;
+    closureReason?: string;
+  };
+  source: { system?: SystemObservation; tables: Record<string, TableObservation> };
+  target: { system?: SystemObservation; tables: Record<string, TableObservation> };
   replication?: ReplicationObservation;
   cost?: CostObservation;
+}
+
+export interface SystemObservation {
+  databaseTime: string;
+  sessionTimezone: string;
+  databaseVersion?: string;
 }
 
 export interface ReplicationObservation {
@@ -93,7 +127,18 @@ export interface Config {
     maxLagSeconds: number;
     monthlyCostBudgetUsd: number;
   };
+  reconciliation?: {
+    settleDelaySeconds?: number;
+    maxRowsPerTable?: number;
+    sourceStabilityCheck?: boolean;
+  };
   replication?: ReplicationConfig;
+  relay?: {
+    testOnly: true;
+    postgresSlotName: string;
+    postgresPublicationName: string;
+    snowflakeLedgerTable: string;
+  };
   tables: TableMapping[];
 }
 

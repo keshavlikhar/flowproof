@@ -19,6 +19,8 @@ test("creates source and target evidence queries", () => {
   assert.match(plan, /pg_replication_slots/);
   assert.match(plan, /COALESCE\(_SNOWFLAKE_DELETED, FALSE\) = FALSE/);
   assert.match(plan, /max_delivery_lag_seconds/);
+  assert.match(plan, /p95_delivery_lag_seconds/);
+  assert.doesNotMatch(plan, /GREATEST/);
 });
 
 test("rejects unsafe table identifiers", () => {

@@ -7,6 +7,11 @@
     "maxLagSeconds": 300,
     "monthlyCostBudgetUsd": 500
   },
+  "reconciliation": {
+    "settleDelaySeconds": 120,
+    "maxRowsPerTable": 1000000,
+    "sourceStabilityCheck": true
+  },
   "replication": {
     "postgresSlotName": "snowflake_connector_example",
     "maxUnconfirmedWalBytes": 104857600,

@@ -5,12 +5,16 @@ function object(value: unknown, label: string): asserts value is Record<string, 
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error(`${label} must be an object`);
 }
 
-function finiteNonNegative(value: unknown, label: string): void {
+function finiteNonNegative(value: unknown, label: string): asserts value is number {
   if (typeof value !== "number" || !Number.isFinite(value) || value < 0) throw new Error(`${label} must be a non-negative number`);
 }
 
-function optionalFiniteNonNegative(value: unknown, label: string): void {
+function optionalFiniteNonNegative(value: unknown, label: string): asserts value is number | undefined {
   if (value !== undefined) finiteNonNegative(value, label);
+}
+
+function optionalFinite(value: unknown, label: string): asserts value is number | undefined {
+  if (value !== undefined && (typeof value !== "number" || !Number.isFinite(value))) throw new Error(`${label} must be a finite number`);
 }
 
 function validateDimensions(value: unknown, label: string, allowEmpty: boolean): Dimension[] {
@@ -41,6 +45,17 @@ export function validateConfig(value: unknown): asserts value is Config {
   if (value.pipeline.rowCountTolerancePercent > 100) throw new Error("config.pipeline.rowCountTolerancePercent must be <= 100");
   finiteNonNegative(value.pipeline.maxLagSeconds, "config.pipeline.maxLagSeconds");
   finiteNonNegative(value.pipeline.monthlyCostBudgetUsd, "config.pipeline.monthlyCostBudgetUsd");
+  if (value.reconciliation !== undefined) {
+    object(value.reconciliation, "config.reconciliation");
+    optionalFiniteNonNegative(value.reconciliation.settleDelaySeconds, "config.reconciliation.settleDelaySeconds");
+    optionalFiniteNonNegative(value.reconciliation.maxRowsPerTable, "config.reconciliation.maxRowsPerTable");
+    if (value.reconciliation.maxRowsPerTable !== undefined && (!Number.isSafeInteger(value.reconciliation.maxRowsPerTable) || value.reconciliation.maxRowsPerTable < 1)) {
+      throw new Error("config.reconciliation.maxRowsPerTable must be a positive safe integer");
+    }
+    if (value.reconciliation.sourceStabilityCheck !== undefined && typeof value.reconciliation.sourceStabilityCheck !== "boolean") {
+      throw new Error("config.reconciliation.sourceStabilityCheck must be a boolean");
+    }
+  }
   if (value.replication !== undefined) {
     object(value.replication, "config.replication");
     if (typeof value.replication.postgresSlotName !== "string" || !value.replication.postgresSlotName.trim()) {
@@ -49,13 +64,20 @@ export function validateConfig(value: unknown): asserts value is Config {
     finiteNonNegative(value.replication.maxUnconfirmedWalBytes, "config.replication.maxUnconfirmedWalBytes");
     finiteNonNegative(value.replication.maxRetainedWalBytes, "config.replication.maxRetainedWalBytes");
   }
+  if (value.relay !== undefined) {
+    object(value.relay, "config.relay");
+    if (value.relay.testOnly !== true) throw new Error("config.relay.testOnly must be true; this relay is not an Openflow implementation");
+    for (const field of ["postgresSlotName", "postgresPublicationName", "snowflakeLedgerTable"] as const) {
+      if (typeof value.relay[field] !== "string" || !value.relay[field]) throw new Error(`config.relay.${field} is required`);
+    }
+  }
   if (!Array.isArray(value.tables) || value.tables.length === 0) throw new Error("config.tables must contain at least one mapping");
   for (const [index, mapping] of value.tables.entries()) {
     object(mapping, `config.tables[${index}]`);
     for (const field of ["source", "target", "freshnessColumn"] as const) {
       if (typeof mapping[field] !== "string" || !mapping[field]) throw new Error(`config.tables[${index}].${field} is required`);
     }
-    if (!Array.isArray(mapping.primaryKey) || (value.version === 2 && mapping.primaryKey.length === 0) || mapping.primaryKey.some((key) => typeof key !== "string" || !key)) {
+    if (!Array.isArray(mapping.primaryKey) || ((value.version === 2 || value.relay !== undefined) && mapping.primaryKey.length === 0) || mapping.primaryKey.some((key) => typeof key !== "string" || !key)) {
       throw new Error(`config.tables[${index}].primaryKey must be an array of column names`);
     }
     if (mapping.checksumColumns !== undefined && (!Array.isArray(mapping.checksumColumns) || mapping.checksumColumns.length === 0 || mapping.checksumColumns.some((column) => typeof column !== "string" || !column))) {
@@ -84,10 +106,18 @@ function validateTableObservations(value: unknown, label: string): void {
       if (typeof column.name !== "string" || !column.name || typeof column.type !== "string" || !column.type || typeof column.nullable !== "boolean") {
         throw new Error(`${label}.${tableName}.columns[${index}] is invalid`);
       }
+      optionalFiniteNonNegative(column.numericPrecision, `${label}.${tableName}.columns[${index}].numericPrecision`);
+      optionalFinite(column.numericScale, `${label}.${tableName}.columns[${index}].numericScale`);
+      optionalFiniteNonNegative(column.characterMaximumLength, `${label}.${tableName}.columns[${index}].characterMaximumLength`);
+      optionalFiniteNonNegative(column.datetimePrecision, `${label}.${tableName}.columns[${index}].datetimePrecision`);
     }
     optionalFiniteNonNegative(observation.rowCount, `${label}.${tableName}.rowCount`);
     optionalFiniteNonNegative(observation.distinctPrimaryKeys, `${label}.${tableName}.distinctPrimaryKeys`);
-    optionalFiniteNonNegative(observation.maxDeliveryLagSeconds, `${label}.${tableName}.maxDeliveryLagSeconds`);
+    optionalFinite(observation.minDeliveryLagSeconds, `${label}.${tableName}.minDeliveryLagSeconds`);
+    optionalFinite(observation.p95DeliveryLagSeconds, `${label}.${tableName}.p95DeliveryLagSeconds`);
+    optionalFinite(observation.maxDeliveryLagSeconds, `${label}.${tableName}.maxDeliveryLagSeconds`);
+    optionalFiniteNonNegative(observation.deliveryLagRowCount, `${label}.${tableName}.deliveryLagRowCount`);
+    optionalFiniteNonNegative(observation.missingDeliveryTimestampCount, `${label}.${tableName}.missingDeliveryTimestampCount`);
     if (observation.checksumBuckets !== undefined) {
       if (!Array.isArray(observation.checksumBuckets)) throw new Error(`${label}.${tableName}.checksumBuckets must be an array`);
       const bucketIds = new Set<string>();
@@ -112,12 +142,23 @@ export function validateSnapshot(value: unknown): asserts value is Snapshot {
   object(value.target.tables, "snapshot.target.tables");
   validateTableObservations(value.source.tables, "snapshot.source.tables");
   validateTableObservations(value.target.tables, "snapshot.target.tables");
+  for (const [side, container] of [["source", value.source], ["target", value.target]] as const) {
+    const system = container.system;
+    if (system !== undefined) {
+      object(system, `snapshot.${side}.system`);
+      if (typeof system.databaseTime !== "string" || Number.isNaN(Date.parse(system.databaseTime)) || system.sessionTimezone !== "UTC") {
+        throw new Error(`snapshot.${side}.system must contain a valid databaseTime and UTC sessionTimezone`);
+      }
+    }
+  }
   if (value.window !== undefined) {
     object(value.window, "snapshot.window");
     if (typeof value.window.since !== "string" || typeof value.window.until !== "string" || Number.isNaN(Date.parse(value.window.since)) || Number.isNaN(Date.parse(value.window.until))) {
       throw new Error("snapshot.window must contain ISO-8601 since and until timestamps");
     }
     if (Date.parse(value.window.since) >= Date.parse(value.window.until)) throw new Error("snapshot.window.since must be earlier than snapshot.window.until");
+    optionalFiniteNonNegative(value.window.settleDelaySeconds, "snapshot.window.settleDelaySeconds");
+    if (value.window.closed !== undefined && typeof value.window.closed !== "boolean") throw new Error("snapshot.window.closed must be a boolean");
   }
   if (value.replication !== undefined) {
     object(value.replication, "snapshot.replication");
@@ -129,5 +170,17 @@ export function validateSnapshot(value: unknown): asserts value is Snapshot {
     object(value.cost, "snapshot.cost");
     optionalFiniteNonNegative(value.cost.currentMonthlyUsd, "snapshot.cost.currentMonthlyUsd");
     optionalFiniteNonNegative(value.cost.projectedMonthlyUsd, "snapshot.cost.projectedMonthlyUsd");
+    if (value.cost.coverage !== undefined && value.cost.coverage !== "partial" && value.cost.coverage !== "complete") throw new Error("snapshot.cost.coverage is invalid");
+    if (value.cost.components !== undefined) {
+      if (!Array.isArray(value.cost.components)) throw new Error("snapshot.cost.components must be an array");
+      for (const [index, component] of value.cost.components.entries()) {
+        object(component, `snapshot.cost.components[${index}]`);
+        if (typeof component.name !== "string" || typeof component.source !== "string" || !["measured", "configured", "unavailable"].includes(String(component.status))) {
+          throw new Error(`snapshot.cost.components[${index}] is invalid`);
+        }
+        optionalFiniteNonNegative(component.monthlyUsd, `snapshot.cost.components[${index}].monthlyUsd`);
+        optionalFiniteNonNegative(component.credits, `snapshot.cost.components[${index}].credits`);
+      }
+    }
   }
 }

@@ -7,6 +7,17 @@
     "maxLagSeconds": 300,
     "monthlyCostBudgetUsd": 500
   },
+  "reconciliation": {
+    "settleDelaySeconds": 120,
+    "maxRowsPerTable": 1000000,
+    "sourceStabilityCheck": true
+  },
+  "relay": {
+    "testOnly": true,
+    "postgresSlotName": "flowproof_test_relay",
+    "postgresPublicationName": "flowproof_publication",
+    "snowflakeLedgerTable": "RAW.FLOWPROOF_RELAY_TRANSACTIONS"
+  },
   "tables": [
     {
       "source": "public.orders",

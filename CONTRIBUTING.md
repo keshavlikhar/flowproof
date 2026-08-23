@@ -4,7 +4,7 @@ FlowProof is intentionally evidence-first. A check may return `PASS` only when i
 
 ## Development
 
-Use Node.js 24 for parity with CI. Dependencies are locked in `package-lock.json`.
+Use Node.js 24 for parity with CI. Dependencies are locked in `package-lock.json`; Node 16 cannot run the native TypeScript CLI or logical-replication dependency.
 
 ```bash
 nvm use
@@ -12,7 +12,7 @@ npm ci
 npm run check
 ```
 
-Changes should include tests for passing, failing, and missing-evidence cases where applicable. Keep database access read-only, avoid collecting raw rows, and never include credentials or customer identifiers in fixtures.
+Changes should include tests for passing, failing, and missing-evidence cases where applicable. Keep verifier access read-only, avoid collecting raw rows, and never include credentials or customer identifiers in fixtures. Relay changes must preserve transaction boundaries and must never acknowledge PostgreSQL before the target transaction is durably committed.
 
 ## Pull requests
 

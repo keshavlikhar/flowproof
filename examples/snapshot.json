@@ -3,7 +3,10 @@
   "observedAt": "2026-08-18T18:00:00Z",
   "window": {
     "since": "2026-08-18T17:00:00Z",
-    "until": "2026-08-18T18:00:00Z"
+    "until": "2026-08-18T18:00:00Z",
+    "settleDelaySeconds": 120,
+    "closed": true,
+    "closureReason": "window ended at least 120s before both observed database clocks"
   },
   "source": {
     "tables": {
@@ -17,6 +20,8 @@
         "rowCount": 100000,
         "distinctPrimaryKeys": 100000,
         "maxFreshnessValue": "2026-08-18T17:59:40Z",
+        "stableDuringCollection": true,
+        "stabilityEvidence": "source window fingerprint was unchanged before and after target collection",
         "checksumBuckets": [
           {
             "id": "a1",
@@ -35,7 +40,7 @@
         "columns": [
           { "name": "id", "type": "number", "nullable": false },
           { "name": "status", "type": "text", "nullable": false },
-          { "name": "updated_at", "type": "timestamp_tz", "nullable": false },
+          { "name": "updated_at", "type": "timestamp_ltz", "nullable": false },
           { "name": "_SNOWFLAKE_INSERTED_AT", "type": "timestamp_ntz", "nullable": false },
           { "name": "_SNOWFLAKE_UPDATED_AT", "type": "timestamp_ntz", "nullable": false },
           { "name": "_SNOWFLAKE_DELETED", "type": "boolean", "nullable": false }
@@ -43,7 +48,11 @@
         "rowCount": 100000,
         "distinctPrimaryKeys": 100000,
         "maxFreshnessValue": "2026-08-18T17:58:55Z",
+        "minDeliveryLagSeconds": 12,
+        "p95DeliveryLagSeconds": 40,
         "maxDeliveryLagSeconds": 45,
+        "deliveryLagRowCount": 100000,
+        "missingDeliveryTimestampCount": 0,
         "activeRowFilter": "_SNOWFLAKE_DELETED = FALSE",
         "checksumBuckets": [
           {
@@ -71,6 +80,14 @@
     "currentMonthlyUsd": 220,
     "projectedMonthlyUsd": 275,
     "method": "30-day tagged compute, serverless, storage, and transfer run-rate",
-    "confidence": "medium"
+    "confidence": "medium",
+    "coverage": "complete",
+    "components": [
+      { "name": "warehouse", "monthlyUsd": 200, "credits": 66.67, "source": "30-day WAREHOUSE_METERING_HISTORY", "status": "measured", "dataThrough": "2026-08-18T15:00:00Z" },
+      { "name": "serverless-task", "monthlyUsd": 50, "credits": 16.67, "source": "30-day SERVERLESS_TASK_HISTORY", "status": "measured", "dataThrough": "2026-08-18T15:00:00Z" },
+      { "name": "storage", "monthlyUsd": 20, "source": "configured monthly allocation", "status": "configured" },
+      { "name": "transfer", "monthlyUsd": 5, "source": "configured monthly allocation", "status": "configured" }
+    ],
+    "missingComponents": []
   }
 }
