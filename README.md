@@ -1,6 +1,6 @@
 # FlowProof
 
-New to the repository? Start with the [architecture map](ARCHITECTURE.md), then follow the [free pilot tutorial](pilot/README.md).
+New to the repository? Start with the [architecture map](ARCHITECTURE.md), then follow the [free pilot tutorial](pilot/README.md). The [Openflow contract note](docs/OPENFLOW_CONTRACT.md) separates documentation-derived simulation from actual runtime validation.
 
 FlowProof is a local-first evidence checker for PostgreSQL-to-Snowflake delivery. It answers a deliberately bounded question:
 
@@ -12,7 +12,7 @@ It does not claim that a point-in-time query proves universal exactly-once behav
 
 Snowflake contains much of the raw evidence: table metadata, mirrored data, task/connector state, and account usage. Native PostgreSQL data mirroring also provides transactional apply semantics. CoCo can generate and run queries or explain failures. Neither is, by itself, a durable cross-system evidence contract that combines source reconciliation, delivery semantics, freshness, schema, and cost into one release gate.
 
-FlowProof is that thin control layer. The verifier remains outside the data path and needs only read access. The repository also includes a separately credentialed, explicitly test-only WAL relay for exercising acknowledgement and replay failures when Openflow is unavailable in a trial account.
+FlowProof is that thin control layer. The verifier remains outside the data path and needs only read access. The repository also includes a separately credentialed, explicitly test-only contract simulator for exercising the documented capture → journal → merge boundaries when Openflow is unavailable in a trial account.
 
 ## Prototype
 
@@ -129,20 +129,28 @@ node --env-file=.env src/cli.ts watch \
 
 Use `--once` to test the rolling-window calculation without leaving a process running.
 
-## Test-only WAL relay
+## Test-only Openflow contract simulator
 
-The [`pilot`](pilot/README.md) tutorial includes a native PostgreSQL `pgoutput` relay. Its purpose is to test FlowProof's transaction ledger, retry, and WAL acknowledgement logic—not to reproduce or validate Openflow.
+The [`pilot`](pilot/README.md) tutorial includes a native PostgreSQL `pgoutput` relay. It models selected behavior described in Snowflake's Openflow documentation; it does not reproduce, execute, or validate the Openflow runtime.
 
 For each PostgreSQL transaction, the relay:
 
 1. Buffers row changes until the PostgreSQL commit message.
 2. Starts one Snowflake transaction.
 3. Checks a ledger key made from the slot, source transaction ID, and commit LSN.
-4. Applies inserts/updates and Openflow-shaped soft deletes.
-5. Writes the ledger record and commits atomically.
-6. Only then acknowledges the commit LSN to PostgreSQL.
+4. Appends changes to a simulation journal and writes the ledger record atomically.
+5. Only after that durable commit acknowledges the commit LSN to PostgreSQL.
+6. A separate `relay-merge` operation later applies inserts, updates, and soft deletes and marks the ledger row merged in one transaction.
 
-If the process loses its connection after step 5 but before step 6, PostgreSQL sends the transaction again. The ledger makes the second application a no-op, after which the relay safely acknowledges it. The relay must run as one instance per slot; Snowflake primary-key declarations are informational and do not provide the ledger's concurrency control.
+If the process loses its connection after journal commit but before acknowledgement, PostgreSQL sends the transaction again. The ledger makes the second capture a no-op, after which the relay safely acknowledges it. A failed destination merge remains pending and can be retried. The relay must run as one instance per slot; Snowflake primary-key declarations are informational and do not provide concurrency control.
+
+Inspect the honest coverage matrix at any time:
+
+```bash
+node src/cli.ts openflow-contract --config pilot/flowproof.example.json
+```
+
+The matrix is always `PARTIAL`: WAL capture, durable simulation-journal staging, asynchronous merge, mapped DML, metadata, soft deletes, and deterministic failures are modeled. Snowpipe Streaming offsets, Openflow FlowFiles/queues, snapshots, schema generations, TOAST behavior, and the actual Openflow runtime remain unverified.
 
 ## Proof model
 
@@ -169,13 +177,13 @@ Snowflake `ACCOUNT_USAGE` data can lag, and its database role must be granted se
 
 ## What remains intentionally unproven
 
-- A documented Openflow source-commit-LSN to final Snowflake-row mapping
-- Openflow queue and journal-to-destination merge progress collectors
+- A runtime-observed Openflow source-commit-LSN to final Snowflake-row mapping
+- Actual Openflow queue and journal-to-destination merge progress collectors
 - A write-assisted barrier mode for strongest end-to-end latency proof
 - GitHub Checks or Slack delivery
 - Concurrent relay instances and arbitrary PostgreSQL types/schema evolution in the test relay
 
-The free pilot proves FlowProof's evaluator and its native WAL failure model. Only an actual Openflow design-partner environment can close the Openflow-specific gaps.
+The free pilot proves FlowProof's evaluator and tests its documentation-derived contract model. Only an actual Openflow design-partner environment can validate the Openflow-specific behavior.
 
 ## Pilot success criteria
 

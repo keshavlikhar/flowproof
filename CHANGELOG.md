@@ -9,7 +9,8 @@ This project follows Semantic Versioning. While the project is below `1.0.0`, mi
 - Added settled-window validation against both database clocks and before/after source fingerprints.
 - Added adaptive checksum buckets, scan limits, lag percentiles/coverage, and precision-aware schema checks.
 - Added `doctor`, rolling `watch`, local HTML reports, and strict TypeScript checking.
-- Added a test-only native `pgoutput` relay with manual post-commit WAL acknowledgement, transaction ledger deduplication, soft deletes, and pre/post-commit failure injection.
+- Added a test-only, documentation-derived Openflow contract simulator with manual post-journal WAL acknowledgement, durable journal staging, asynchronous destination merge, transaction deduplication, soft deletes, and capture/merge failure injection.
+- Added an `openflow-contract` coverage report that separates modeled, partial, and unverified Openflow behavior.
 - Added component-level cost evidence that remains `UNKNOWN` when the expected inventory is incomplete.
 
 - Added a free local PostgreSQL 17 pilot with logical replication settings, seeded data, and least-privilege users.

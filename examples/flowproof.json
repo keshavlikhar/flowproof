@@ -25,6 +25,7 @@
       "freshnessColumn": "updated_at",
       "checksumColumns": ["id", "status", "updated_at"],
       "targetSoftDeleteColumn": "_SNOWFLAKE_DELETED",
+      "targetInsertTimestampColumn": "_SNOWFLAKE_INSERTED_AT",
       "targetApplyTimestampColumn": "_SNOWFLAKE_UPDATED_AT"
     }
   ]

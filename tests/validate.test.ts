@@ -45,3 +45,12 @@ test("refuses to present the native relay as a production connector", () => {
     tables: [{ source: "public.orders", target: "RAW.ORDERS", primaryKey: ["id"], freshnessColumn: "updated_at" }],
   }), /testOnly must be true/);
 });
+
+test("requires a journal table for the simulated Openflow workflow", () => {
+  assert.throws(() => validateConfig({
+    version: 2,
+    pipeline: { name: "orders", policy: "pilot", rowCountTolerancePercent: 0, maxLagSeconds: 60, monthlyCostBudgetUsd: 100 },
+    relay: { testOnly: true, workflow: "openflow-simulated", postgresSlotName: "slot", postgresPublicationName: "publication", snowflakeLedgerTable: "RAW.LEDGER" },
+    tables: [{ source: "public.orders", target: "RAW.ORDERS", primaryKey: ["id"], freshnessColumn: "updated_at" }],
+  }), /snowflakeJournalTable is required/);
+});

@@ -70,6 +70,12 @@ export function validateConfig(value: unknown): asserts value is Config {
     for (const field of ["postgresSlotName", "postgresPublicationName", "snowflakeLedgerTable"] as const) {
       if (typeof value.relay[field] !== "string" || !value.relay[field]) throw new Error(`config.relay.${field} is required`);
     }
+    if (value.relay.workflow !== undefined && value.relay.workflow !== "direct" && value.relay.workflow !== "openflow-simulated") {
+      throw new Error("config.relay.workflow must be direct or openflow-simulated");
+    }
+    if (value.relay.workflow === "openflow-simulated" && (typeof value.relay.snowflakeJournalTable !== "string" || !value.relay.snowflakeJournalTable)) {
+      throw new Error("config.relay.snowflakeJournalTable is required for openflow-simulated workflow");
+    }
   }
   if (!Array.isArray(value.tables) || value.tables.length === 0) throw new Error("config.tables must contain at least one mapping");
   for (const [index, mapping] of value.tables.entries()) {
@@ -83,7 +89,7 @@ export function validateConfig(value: unknown): asserts value is Config {
     if (mapping.checksumColumns !== undefined && (!Array.isArray(mapping.checksumColumns) || mapping.checksumColumns.length === 0 || mapping.checksumColumns.some((column) => typeof column !== "string" || !column))) {
       throw new Error(`config.tables[${index}].checksumColumns must be a non-empty array of column names`);
     }
-    for (const field of ["targetSoftDeleteColumn", "targetApplyTimestampColumn"] as const) {
+    for (const field of ["targetSoftDeleteColumn", "targetInsertTimestampColumn", "targetApplyTimestampColumn"] as const) {
       if (mapping[field] !== undefined && (typeof mapping[field] !== "string" || !mapping[field])) {
         throw new Error(`config.tables[${index}].${field} must be a column name`);
       }

@@ -81,9 +81,16 @@ node --env-file=.env src/cli.ts doctor \
   --config evidence/flowproof.local.json
 ```
 
-## 5. Optional native WAL failure pilot
+## 5. Optional Openflow contract simulation
 
-This section is explicitly **not Openflow**. It lets us test the hard part we control: PostgreSQL transaction boundaries, Snowflake atomic apply, replay deduplication, and acknowledging WAL only after the Snowflake commit.
+This section is explicitly **not an Openflow test**. It models the documented capture → durable journal → asynchronous merge workflow so we can test PostgreSQL transaction boundaries, replay deduplication, acknowledgements, and both failure boundaries without claiming the real runtime was exercised.
+
+First display the exact coverage and gaps:
+
+```bash
+node src/cli.ts openflow-contract \
+  --config evidence/flowproof.local.json
+```
 
 ### Human step: create the Snowflake writer
 
@@ -104,14 +111,14 @@ FLOWPROOF_RELAY_SNOWFLAKE_ROLE=FLOWPROOF_RELAY_ROLE
 
 For a deployed service, use `FLOWPROOF_RELAY_SNOWFLAKE_PRIVATE_KEY_PATH` and its optional passphrase variable instead of a password.
 
-Create the native `pgoutput` slot and verify the Snowflake ledger:
+Create the native `pgoutput` slot and verify the Snowflake simulation journal and ledger. The relay role cannot create arbitrary Snowflake tables; the browser setup script owns that step:
 
 ```bash
 node --env-file=.env src/cli.ts relay-setup \
   --config evidence/flowproof.local.json
 ```
 
-Start the relay in terminal A. Three source transactions will be applied, then it stops:
+Start capture in terminal A. Three source transactions will be durably journaled and acknowledged, then it stops:
 
 ```bash
 node --env-file=.env src/cli.ts relay-run \
@@ -129,9 +136,17 @@ docker compose \
   < pilot/postgres/exercise_relay.sql
 ```
 
-The relay should print three committed source transaction IDs and LSNs. The target insert/update and soft delete share Snowflake transactions with their ledger records.
+The relay should print three journaled source transaction IDs and LSNs. At this point the destination must still be unchanged. Apply the pending journal transactions separately:
 
-### Prove replay after a network-shaped failure
+```bash
+node --env-file=.env src/cli.ts relay-merge \
+  --config evidence/flowproof.local.json \
+  --max-transactions 3
+```
+
+Now the destination insert/update/soft-delete changes should be visible, and each ledger row should have `merged_at` populated.
+
+### Prove replay after a capture-side network-shaped failure
 
 Start a one-transaction relay that deliberately fails after the Snowflake commit but before PostgreSQL acknowledgement:
 
@@ -150,9 +165,22 @@ node --env-file=.env src/cli.ts relay-run \
   --max-transactions 1
 ```
 
-It should print `Relay skipped`: PostgreSQL replayed the unacknowledged transaction, the Snowflake ledger proved it had already committed, no target row was applied twice, and the relay then acknowledged the LSN.
+It should print `Relay skipped`: PostgreSQL replayed the unacknowledged transaction, the Snowflake ledger proved the journal already committed, no event was journaled twice, and the relay then acknowledged the LSN.
 
 `before-snowflake-commit` is the other supported failure point. That scenario rolls back Snowflake, does not acknowledge PostgreSQL, and applies normally after restart.
+
+### Prove merge retry
+
+With a pending journal transaction, fail immediately before the destination transaction commits:
+
+```bash
+FLOWPROOF_RELAY_MERGE_FAILURE_POINT=before-merge-commit \
+node --env-file=.env src/cli.ts relay-merge \
+  --config evidence/flowproof.local.json \
+  --max-transactions 1
+```
+
+The target write and `merged_at` update roll back together. Run the same command without the failure variable; it should merge once. `after-merge-commit` models losing the client response after commit: the next run finds no pending ledger row and does not reapply it.
 
 ## 6. Optional staged cost evidence
 
@@ -161,8 +189,9 @@ It should print `Relay skipped`: PostgreSQL replayed the unacknowledged transact
 What this still cannot prove:
 
 - Openflow read or applied the same WAL transaction.
-- Openflow exposes a durable source commit-LSN to destination-row mapping.
+- Openflow's own durable state maps a source commit-LSN to a destination row.
 - Openflow journal/merge queues and SPCS runtime stayed healthy.
+- Snowpipe Streaming committed-offset behavior, snapshot orchestration, schema generations, and TOAST handling match the documentation in the deployed version.
 - Deletes are fully reconciled by a freshness window; a transaction/LSN barrier is still needed for that stronger proof.
 
 ## Stop the pilot

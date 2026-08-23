@@ -109,6 +109,7 @@ export interface TableMapping {
   freshnessColumn: string;
   checksumColumns?: string[];
   targetSoftDeleteColumn?: string;
+  targetInsertTimestampColumn?: string;
   targetApplyTimestampColumn?: string;
 }
 
@@ -135,9 +136,11 @@ export interface Config {
   replication?: ReplicationConfig;
   relay?: {
     testOnly: true;
+    workflow?: "direct" | "openflow-simulated";
     postgresSlotName: string;
     postgresPublicationName: string;
     snowflakeLedgerTable: string;
+    snowflakeJournalTable?: string;
   };
   tables: TableMapping[];
 }

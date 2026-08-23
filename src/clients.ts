@@ -59,6 +59,9 @@ export function snowflakeClient(environment: NodeJS.ProcessEnv = process.env): Q
     role: environment.FLOWPROOF_SNOWFLAKE_ROLE,
     schema: environment.FLOWPROOF_SNOWFLAKE_SCHEMA,
     application: "flowproof",
+    timeout: 60_000,
+    retryTimeout: 0,
+    sfRetryMaxLoginRetries: 1,
   });
 
   let connected: Promise<void> | undefined;

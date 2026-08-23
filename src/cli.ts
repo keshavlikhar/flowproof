@@ -9,7 +9,8 @@ import { validateConfig, validateSnapshot } from "./validate.ts";
 import { collectSnapshot } from "./collect.ts";
 import { diagnose, renderDoctor } from "./doctor.ts";
 import { renderHtml } from "./html.ts";
-import { runRelay, setupRelay } from "./relay.ts";
+import { runRelay, runRelayMerge, setupRelay } from "./relay.ts";
+import { openflowContract, renderOpenflowContract } from "./openflow-contract.ts";
 
 function argument(name: string): string | undefined {
   const index = process.argv.indexOf(name);
@@ -63,13 +64,18 @@ function setReportExitCode(report: ReturnType<typeof audit>): void {
 async function main(): Promise<void> {
   const command = process.argv[2];
   const configPath = argument("--config");
-  if (!configPath || !["audit", "plan", "verify", "doctor", "watch", "relay-setup", "relay-run"].includes(command)) {
-    console.error("Usage:\n  flowproof audit --config flowproof.json --snapshot snapshot.json [--json] [--html report.html]\n  flowproof plan --config flowproof.json\n  flowproof doctor --config flowproof.json\n  flowproof verify --config flowproof.json --since <ISO> --until <ISO> [--json] [--html report.html] [--save-snapshot path]\n  flowproof watch --config flowproof.json [--window-minutes 60] [--interval-seconds 300] [--once] [--html report.html]\n  flowproof relay-setup --config flowproof.json\n  flowproof relay-run --config flowproof.json [--max-transactions 1]");
+  if (!configPath || !["audit", "plan", "verify", "doctor", "watch", "relay-setup", "relay-run", "relay-merge", "openflow-contract"].includes(command)) {
+    console.error("Usage:\n  flowproof audit --config flowproof.json --snapshot snapshot.json [--json] [--html report.html]\n  flowproof plan --config flowproof.json\n  flowproof doctor --config flowproof.json\n  flowproof verify --config flowproof.json --since <ISO> --until <ISO> [--json] [--html report.html] [--save-snapshot path]\n  flowproof watch --config flowproof.json [--window-minutes 60] [--interval-seconds 300] [--once] [--html report.html]\n  flowproof relay-setup --config flowproof.json\n  flowproof relay-run --config flowproof.json [--max-transactions 1]\n  flowproof relay-merge --config flowproof.json [--max-transactions 1]\n  flowproof openflow-contract --config flowproof.json [--json]");
     process.exitCode = 2;
     return;
   }
   const config = await jsonFile<Config>(configPath);
   validateConfig(config);
+  if (command === "openflow-contract") {
+    const report = openflowContract(config);
+    console.log(process.argv.includes("--json") ? JSON.stringify(report, null, 2) : renderOpenflowContract(report));
+    return;
+  }
   if (command === "plan") {
     console.log(queryPlan(config));
     return;
@@ -80,10 +86,16 @@ async function main(): Promise<void> {
     return;
   }
   if (command === "relay-run") {
-    console.error("TEST ONLY: native pgoutput relay, not Snowflake Openflow. Run only one instance per slot.");
+    console.error("TEST ONLY: documented-contract simulator, not a test of the Snowflake Openflow runtime. Run only one instance per slot.");
     const maxTransactions = argument("--max-transactions") === undefined ? undefined : positiveInteger("--max-transactions", 1);
     const processed = await runRelay(config, process.env, maxTransactions);
     console.log(`Relay stopped after ${processed} committed transaction(s).`);
+    return;
+  }
+  if (command === "relay-merge") {
+    console.error("TEST ONLY: simulated journal merge, not Snowflake Openflow.");
+    const merged = await runRelayMerge(config, process.env, positiveInteger("--max-transactions", 1));
+    console.log(`Merged ${merged} journaled transaction(s).`);
     return;
   }
   if (command === "doctor") {

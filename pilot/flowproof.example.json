@@ -14,9 +14,11 @@
   },
   "relay": {
     "testOnly": true,
+    "workflow": "openflow-simulated",
     "postgresSlotName": "flowproof_test_relay",
     "postgresPublicationName": "flowproof_publication",
-    "snowflakeLedgerTable": "RAW.FLOWPROOF_RELAY_TRANSACTIONS"
+    "snowflakeLedgerTable": "RAW.FLOWPROOF_RELAY_TRANSACTIONS",
+    "snowflakeJournalTable": "RAW.FLOWPROOF_OPENFLOW_SIM_JOURNAL"
   },
   "tables": [
     {
@@ -26,6 +28,7 @@
       "freshnessColumn": "updated_at",
       "checksumColumns": ["id", "status", "amount", "updated_at"],
       "targetSoftDeleteColumn": "_SNOWFLAKE_DELETED",
+      "targetInsertTimestampColumn": "_SNOWFLAKE_INSERTED_AT",
       "targetApplyTimestampColumn": "_SNOWFLAKE_UPDATED_AT"
     }
   ]

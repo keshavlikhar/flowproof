@@ -38,7 +38,7 @@ A version 2 verification can pass content, key, or timing checks only when:
 
 If any condition is absent or ambiguous, those dimensions become `UNKNOWN`.
 
-## Test relay path
+## Test-only Openflow contract path
 
 ```text
 PostgreSQL WAL / pgoutput
@@ -48,14 +48,22 @@ PostgreSQL WAL / pgoutput
       │
       ▼
  Snowflake transaction
-      ├── MERGE target rows / mark deletes
-      └── INSERT transaction-ledger record
+      ├── APPEND simulation-journal events
+      └── INSERT unmerged transaction-ledger record
       │ commit succeeds
       ▼
  acknowledge commit LSN to PostgreSQL
+      │
+      ▼
+ relay-merge (asynchronous)
+      │ Snowflake transaction
+      ├── MERGE target rows / mark deletes
+      └── mark ledger transaction merged
 ```
 
-The ledger key is `slot + source transaction ID + commit LSN`. A crash after Snowflake commit but before PostgreSQL acknowledgement causes a replay. On replay, the ledger record is found, target writes are skipped, and the LSN is acknowledged.
+The ledger key is `slot + source transaction ID + commit LSN`. A crash after journal commit but before PostgreSQL acknowledgement causes a replay. On replay, the ledger record is found, duplicate journal writes are skipped, and the LSN is acknowledged. Destination merging is independently retryable.
+
+This shape is derived from Snowflake's published capture, enrichment, Snowpipe Streaming, and journal-merge documentation. It tests boundaries under FlowProof's control, not Openflow internals. The generic simulation journal is intentionally different from Openflow's per-table, schema-generation journals.
 
 The relay is deliberately narrow and test-only:
 
@@ -63,7 +71,7 @@ The relay is deliberately narrow and test-only:
 - Simple `schema.table` and same-name source/target columns
 - Insert, update, and delete; truncate is rejected
 - Openflow-shaped soft deletes when configured
-- No initial snapshot/bootstrap, DDL replication, arbitrary type conversion, or Openflow claim
+- No initial snapshot/bootstrap, FlowFiles, Snowpipe Streaming offsets, DDL/schema-generation handling, TOAST emulation, arbitrary type conversion, or Openflow claim
 
 ## Trust boundaries
 
@@ -82,6 +90,7 @@ The relay is deliberately narrow and test-only:
 | Add a policy profile | `src/policy.ts` |
 | Add a CLI command | `src/cli.ts` |
 | Change WAL apply/retry behavior | `src/relay.ts` |
+| Change documented Openflow coverage labels | `src/openflow-contract.ts` |
 | Change config or snapshot shape | `src/types.ts` and `src/validate.ts` |
 
 Every behavioral change should add a passing, failing, and missing/ambiguous-evidence test where applicable.
