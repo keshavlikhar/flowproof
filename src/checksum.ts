@@ -35,7 +35,9 @@ function postgresValue(column: Column): string {
   const name = identifier(column.name);
   const kind = family(column.type);
   if (kind === "integer") return `${name}::numeric::text`;
-  if (kind === "decimal") return `regexp_replace(regexp_replace(${name}::numeric::text, '(\\.[0-9]*?)0+$', '\\1'), '\\.$', '')`;
+  if (kind === "decimal") {
+    return `regexp_replace(regexp_replace(${name}::numeric::text, '(\\.[0-9]*[1-9])0+$', '\\1'), '\\.0+$', '')`;
+  }
   if (kind === "text") return `${name}::text`;
   if (kind === "boolean") return `CASE WHEN ${name} THEN 'true' ELSE 'false' END`;
   if (kind === "date") return `to_char(${name}, 'YYYY-MM-DD')`;
@@ -51,7 +53,9 @@ function snowflakeValue(column: Column): string {
   const name = identifier(column.name);
   const kind = family(column.type);
   if (kind === "integer") return `TO_VARCHAR(${name})`;
-  if (kind === "decimal") return `REGEXP_REPLACE(REGEXP_REPLACE(TO_VARCHAR(${name}), '(\\\\.[0-9]*?)0+$', '\\\\1'), '\\\\.$', '')`;
+  if (kind === "decimal") {
+    return `REGEXP_REPLACE(REGEXP_REPLACE(TO_VARCHAR(${name}), '(\\\\.[0-9]*[1-9])0+$', '\\\\1'), '\\\\.0+$', '')`;
+  }
   if (kind === "text") return `TO_VARCHAR(${name})`;
   if (kind === "boolean") return `CASE WHEN ${name} THEN 'true' ELSE 'false' END`;
   if (kind === "date") return `TO_CHAR(${name}, 'YYYY-MM-DD')`;

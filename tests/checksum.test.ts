@@ -29,6 +29,10 @@ test("builds matching deterministic bucket structure for PostgreSQL and Snowflak
   assert.match(postgres, /AT TIME ZONE 'UTC'/);
   assert.match(snowflake, /CONVERT_TIMEZONE\('UTC', updated_at\)/);
   assert.match(snowflake, /'\\\\1'/);
+  // Whole-number decimals need a separate all-zero fractional rule so that
+  // PostgreSQL 25.00 and Snowflake 25 canonicalize to the same value.
+  assert.ok(postgres.includes(String.raw`'\.0+$'`));
+  assert.ok(snowflake.includes(String.raw`'\\.0+$'`));
 });
 
 test("refuses unsupported checksum types instead of producing weak evidence", () => {

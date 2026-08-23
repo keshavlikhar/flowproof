@@ -29,6 +29,10 @@ Create a Snowflake trial without adding a payment method. Select Standard Editio
 
 The script uses an X-Small warehouse, 60-second auto-suspend, a one-credit monthly resource monitor, and explicitly suspends the warehouse when setup finishes.
 
+After setup, run `pilot/snowflake/validate_trial.sql` in a new worksheet. Its final result should be `PASS`. The preceding result tabs let you inspect the warehouse safety controls, resource monitor, read-only grants, and target-table schema. The validation script explicitly suspends the warehouse when it finishes.
+
+The simulated Openflow metadata timestamps are stored as UTC `TIMESTAMP_NTZ` values. Validation converts the source `TIMESTAMP_TZ` value to a UTC wall-clock timestamp before calculating lag, so the account's session timezone cannot distort the result.
+
 ## 3. Configure FlowProof
 
 Copy the safe configuration template:
