@@ -35,7 +35,9 @@ function postgresValue(column: Column): string {
   const name = identifier(column.name);
   const kind = family(column.type);
   if (kind === "integer") return `${name}::numeric::text`;
-  if (kind === "decimal") return `regexp_replace(regexp_replace(${name}::numeric::text, '(\\.[0-9]*?)0+$', '\\1'), '\\.$', '')`;
+  if (kind === "decimal") {
+    return `regexp_replace(regexp_replace(${name}::numeric::text, '(\\.[0-9]*[1-9])0+$', '\\1'), '\\.0+$', '')`;
+  }
   if (kind === "text") return `${name}::text`;
   if (kind === "boolean") return `CASE WHEN ${name} THEN 'true' ELSE 'false' END`;
   if (kind === "date") return `to_char(${name}, 'YYYY-MM-DD')`;
@@ -51,7 +53,9 @@ function snowflakeValue(column: Column): string {
   const name = identifier(column.name);
   const kind = family(column.type);
   if (kind === "integer") return `TO_VARCHAR(${name})`;
-  if (kind === "decimal") return `REGEXP_REPLACE(REGEXP_REPLACE(TO_VARCHAR(${name}), '(\\\\.[0-9]*?)0+$', '\\\\1'), '\\\\.$', '')`;
+  if (kind === "decimal") {
+    return `REGEXP_REPLACE(REGEXP_REPLACE(TO_VARCHAR(${name}), '(\\\\.[0-9]*[1-9])0+$', '\\\\1'), '\\\\.0+$', '')`;
+  }
   if (kind === "text") return `TO_VARCHAR(${name})`;
   if (kind === "boolean") return `CASE WHEN ${name} THEN 'true' ELSE 'false' END`;
   if (kind === "date") return `TO_CHAR(${name}, 'YYYY-MM-DD')`;
@@ -78,7 +82,11 @@ export function checksumQuery(
   sourceColumns: Column[],
   qualifiedTable: string,
   predicate: string,
+  bucketPrefixLength = 2,
 ): string {
+  if (!Number.isSafeInteger(bucketPrefixLength) || bucketPrefixLength < 2 || bucketPrefixLength > 4) {
+    throw new Error("Checksum bucket prefix length must be an integer from 2 to 4");
+  }
   if (!mapping.primaryKey.length) throw new Error(`A primary key is required to checksum ${mapping.source}`);
   const byName = new Map(sourceColumns.map((column) => [column.name.toLowerCase(), column]));
   const keyColumns = mapping.primaryKey.map((name) => {
@@ -104,7 +112,7 @@ export function checksumQuery(
   WHERE ${predicate}
 ), hashed AS (
   SELECT key_text, MD5(key_text) AS key_hash, MD5(content_text) AS content_hash,
-         SUBSTR(MD5(key_text), 1, 2) AS bucket_id
+         SUBSTR(MD5(key_text), 1, ${bucketPrefixLength}) AS bucket_id
   FROM canonical
 )
 SELECT bucket_id, ${countCast} AS row_count,
@@ -113,6 +121,14 @@ SELECT bucket_id, ${countCast} AS row_count,
 FROM hashed
 GROUP BY bucket_id
 ORDER BY bucket_id`;
+}
+
+export function checksumBucketPrefixLength(rowCount: number, targetRowsPerBucket = 50_000): number {
+  if (!Number.isSafeInteger(rowCount) || rowCount < 0) throw new Error("Checksum row count must be a safe non-negative integer");
+  if (!Number.isSafeInteger(targetRowsPerBucket) || targetRowsPerBucket < 1) throw new Error("Checksum target rows per bucket must be positive");
+  if (rowCount === 0) return 2;
+  const requiredBuckets = Math.ceil(rowCount / targetRowsPerBucket);
+  return Math.min(4, Math.max(2, Math.ceil(Math.log(requiredBuckets) / Math.log(16))));
 }
 
 function field(row: Record<string, unknown>, name: string): unknown {

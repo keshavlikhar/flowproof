@@ -23,10 +23,10 @@ function postgresFor(mapping: TableMapping): string[] {
   const distinctKeys = keyColumns.length === 1 ? keyColumns[0] : `(${keyColumns.join(", ")})`;
   const freshnessColumn = identifier(mapping.freshnessColumn);
   return [
-    `SELECT column_name, data_type, is_nullable FROM information_schema.columns WHERE table_schema = '${schema}' AND table_name = '${table}' ORDER BY ordinal_position;`,
+    `SELECT column_name, data_type, is_nullable, numeric_precision, numeric_scale, character_maximum_length, datetime_precision FROM information_schema.columns WHERE table_schema = '${schema}' AND table_name = '${table}' ORDER BY ordinal_position;`,
     `SELECT COUNT(*) AS row_count, MAX(${freshnessColumn}) AS max_freshness FROM ${schema}.${table} WHERE ${freshnessColumn} >= '<SINCE_ISO>'::timestamptz AND ${freshnessColumn} < '<UNTIL_ISO>'::timestamptz;`,
     keyColumns.length ? `SELECT COUNT(DISTINCT ${distinctKeys}) AS distinct_primary_keys FROM ${schema}.${table} WHERE ${freshnessColumn} >= '<SINCE_ISO>'::timestamptz AND ${freshnessColumn} < '<UNTIL_ISO>'::timestamptz;` : "-- No primary key configured.",
-    `-- The live collector also calculates 256 deterministic key/content checksum buckets for this closed window.`,
+    `-- The live collector also calculates adaptive deterministic key/content checksum buckets for this closed window.`,
   ];
 }
 
@@ -37,9 +37,11 @@ function snowflakeFor(mapping: TableMapping): string[] {
   const softDelete = mapping.targetSoftDeleteColumn ? identifier(mapping.targetSoftDeleteColumn) : undefined;
   const applyTimestamp = mapping.targetApplyTimestampColumn ? identifier(mapping.targetApplyTimestampColumn) : undefined;
   const activePredicate = softDelete ? ` AND COALESCE(${softDelete}, FALSE) = FALSE` : "";
-  const deliveryLag = applyTimestamp ? `, MAX(GREATEST(0, DATEDIFF('second', ${freshnessColumn}, ${applyTimestamp}))) AS max_delivery_lag_seconds` : "";
+  const deliveryLag = applyTimestamp
+    ? `, MIN(DATEDIFF('second', ${freshnessColumn}, ${applyTimestamp})) AS min_delivery_lag_seconds, APPROX_PERCENTILE(DATEDIFF('second', ${freshnessColumn}, ${applyTimestamp}), 0.95) AS p95_delivery_lag_seconds, MAX(DATEDIFF('second', ${freshnessColumn}, ${applyTimestamp})) AS max_delivery_lag_seconds, COUNT_IF(${applyTimestamp} IS NOT NULL) AS delivery_lag_row_count, COUNT_IF(${applyTimestamp} IS NULL) AS missing_delivery_timestamp_count`
+    : "";
   return [
-    `SELECT column_name, data_type, is_nullable FROM INFORMATION_SCHEMA.COLUMNS WHERE table_schema = '${schema.toUpperCase()}' AND table_name = '${table.toUpperCase()}' ORDER BY ordinal_position;`,
+    `SELECT column_name, data_type, is_nullable, numeric_precision, numeric_scale, character_maximum_length, datetime_precision FROM INFORMATION_SCHEMA.COLUMNS WHERE table_schema = '${schema.toUpperCase()}' AND table_name = '${table.toUpperCase()}' ORDER BY ordinal_position;`,
     `SELECT COUNT(*) AS row_count, MAX(${freshnessColumn}) AS max_freshness${deliveryLag} FROM ${schema}.${table} WHERE ${freshnessColumn} >= TO_TIMESTAMP_TZ('<SINCE_ISO>') AND ${freshnessColumn} < TO_TIMESTAMP_TZ('<UNTIL_ISO>')${activePredicate};`,
     keys.length ? `SELECT COUNT(DISTINCT ${keys.join(", ")}) AS distinct_primary_keys FROM ${schema}.${table} WHERE ${freshnessColumn} >= TO_TIMESTAMP_TZ('<SINCE_ISO>') AND ${freshnessColumn} < TO_TIMESTAMP_TZ('<UNTIL_ISO>')${activePredicate};` : "-- No primary key configured.",
     `-- The live collector applies the same active-row filter to deterministic key/content checksum buckets.`,

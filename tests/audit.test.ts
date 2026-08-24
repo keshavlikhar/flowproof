@@ -36,7 +36,7 @@ test("fails duplicates, late delivery, and budget excess", () => {
   input.cost!.projectedMonthlyUsd = 150;
   const report = audit(config, input);
   assert.equal(report.overall, "fail");
-  assert.equal(report.results.find((result) => result.dimension === "exactly-once")?.status, "fail");
+  assert.equal(report.results.find((result) => result.dimension === "delivery-integrity")?.status, "fail");
   assert.equal(report.results.find((result) => result.dimension === "timeliness")?.status, "fail");
   assert.equal(report.results.find((result) => result.dimension === "cost")?.status, "fail");
 });
@@ -48,14 +48,14 @@ test("returns unknown rather than claiming proof when checksums are absent", () 
   const report = audit(config, input);
   assert.equal(report.overall, "unknown");
   assert.equal(report.results.find((result) => result.dimension === "correctness")?.status, "unknown");
-  assert.equal(report.results.find((result) => result.dimension === "exactly-once")?.status, "unknown");
+  assert.equal(report.results.find((result) => result.dimension === "delivery-integrity")?.status, "unknown");
 });
 
 test("detects different keys even when row and distinct-key counts match", () => {
   const input = snapshot();
   input.target.tables["RAW.ORDERS"].checksumBuckets![0].keyChecksum = "same-count-different-keys";
   const report = audit(config, input);
-  assert.equal(report.results.find((result) => result.dimension === "exactly-once")?.status, "fail");
+  assert.equal(report.results.find((result) => result.dimension === "delivery-integrity")?.status, "fail");
 });
 
 test("rejects checksum evidence that does not cover every counted row", () => {
@@ -63,7 +63,7 @@ test("rejects checksum evidence that does not cover every counted row", () => {
   input.target.tables["RAW.ORDERS"].checksumBuckets![0].rowCount = 1;
   const report = audit(config, input);
   assert.equal(report.results.find((result) => result.dimension === "correctness")?.status, "fail");
-  assert.equal(report.results.find((result) => result.dimension === "exactly-once")?.status, "fail");
+  assert.equal(report.results.find((result) => result.dimension === "delivery-integrity")?.status, "fail");
 });
 
 test("fails an inactive or dangerously lagging replication slot", () => {
@@ -71,7 +71,68 @@ test("fails an inactive or dangerously lagging replication slot", () => {
   input.replication!.active = false;
   input.replication!.retainedWalBytes = 5000;
   const report = audit(config, input);
-  assert.equal(report.results.find((result) => result.dimension === "capture")?.status, "fail");
+  assert.equal(report.results.find((result) => result.dimension === "capture-health")?.status, "fail");
+});
+
+test("pilot policy passes supported checks while keeping unavailable cost visible", () => {
+  const pilot = structuredClone(config);
+  pilot.version = 2;
+  pilot.pipeline.policy = "pilot";
+  delete pilot.replication;
+  const input = snapshot();
+  input.window = { since: "2026-01-01T00:00:00Z", until: "2026-01-01T00:01:00Z", closed: true, settleDelaySeconds: 60 };
+  input.source.tables["public.orders"].stableDuringCollection = true;
+  delete input.replication;
+  delete input.cost;
+  const report = audit(pilot, input);
+  assert.equal(report.overall, "pass");
+  assert.equal(report.results.find((result) => result.dimension === "cost")?.status, "unknown");
+  assert.equal(report.results.find((result) => result.dimension === "cost")?.blocking, false);
+  assert.equal(report.results.find((result) => result.dimension === "capture-health")?.blocking, false);
+});
+
+test("v2 refuses to prove a window that is open or changed during collection", () => {
+  const pilot = structuredClone(config);
+  pilot.version = 2;
+  pilot.pipeline.policy = "pilot";
+  delete pilot.replication;
+  const input = snapshot();
+  input.window = { since: "2026-01-01T00:00:00Z", until: "2026-01-01T00:03:00Z", closed: false, closureReason: "window is newer than the safe cutoff" };
+  input.source.tables["public.orders"].stableDuringCollection = false;
+  const report = audit(pilot, input);
+  assert.equal(report.overall, "unknown");
+  assert.equal(report.results.find((result) => result.dimension === "correctness")?.status, "unknown");
+  assert.match(report.scope, /open\/unsafe/);
+});
+
+test("detects unsafe nullability, numeric capacity, and timestamp semantics", () => {
+  const input = snapshot();
+  input.source.tables["public.orders"].columns = [
+    { name: "id", type: "bigint", nullable: false },
+    { name: "amount", type: "numeric", nullable: true, numericPrecision: 12, numericScale: 2 },
+    { name: "updated_at", type: "timestamp with time zone", nullable: false, datetimePrecision: 6 },
+  ];
+  input.target.tables["RAW.ORDERS"].columns = [
+    { name: "id", type: "number", nullable: false, numericPrecision: 38, numericScale: 0 },
+    { name: "amount", type: "number", nullable: false, numericPrecision: 10, numericScale: 1 },
+    { name: "updated_at", type: "timestamp_ntz", nullable: false, datetimePrecision: 9 },
+  ];
+  const result = audit(config, input).results.find((item) => item.dimension === "schema");
+  assert.equal(result?.status, "fail");
+  assert.match(result?.summary ?? "", /source permits NULL/);
+  assert.match(result?.summary ?? "", /timestamp with time zone -> timestamp_ntz/);
+});
+
+test("timeliness is unknown for missing apply timestamps or negative lag", () => {
+  const missing = snapshot();
+  missing.target.tables["RAW.ORDERS"].deliveryLagRowCount = 1;
+  missing.target.tables["RAW.ORDERS"].missingDeliveryTimestampCount = 1;
+  assert.equal(audit(config, missing).results.find((item) => item.dimension === "timeliness")?.status, "unknown");
+  const skewed = snapshot();
+  skewed.target.tables["RAW.ORDERS"].deliveryLagRowCount = 2;
+  skewed.target.tables["RAW.ORDERS"].missingDeliveryTimestampCount = 0;
+  skewed.target.tables["RAW.ORDERS"].minDeliveryLagSeconds = -5;
+  assert.equal(audit(config, skewed).results.find((item) => item.dimension === "timeliness")?.status, "unknown");
 });
 
 test("does not pass a low-confidence partial cost estimate", () => {
@@ -80,4 +141,19 @@ test("does not pass a low-confidence partial cost estimate", () => {
   const report = audit(config, input);
   assert.equal(report.overall, "unknown");
   assert.equal(report.results.find((result) => result.dimension === "cost")?.status, "unknown");
+});
+
+test("does not pass an incomplete cost component inventory", () => {
+  const input = snapshot();
+  input.cost = {
+    projectedMonthlyUsd: 25,
+    method: "warehouse only",
+    confidence: "medium",
+    coverage: "partial",
+    components: [{ name: "warehouse", monthlyUsd: 25, source: "metering", status: "measured" }],
+    missingComponents: ["storage", "transfer"],
+  };
+  const result = audit(config, input).results.find((item) => item.dimension === "cost");
+  assert.equal(result?.status, "unknown");
+  assert.match(result?.evidence.find((item) => item.label === "missing cost components")?.observed ?? "", /storage/);
 });

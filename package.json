@@ -11,7 +11,8 @@
     "audit": "node src/cli.ts audit --config examples/flowproof.json --snapshot examples/snapshot.json",
     "plan": "node src/cli.ts plan --config examples/flowproof.json",
     "test": "node --test tests/*.test.ts",
-    "check": "npm test && npm run audit && npm run plan"
+    "typecheck": "tsc --noEmit",
+    "check": "npm run typecheck && npm test && npm run audit && npm run plan"
   },
   "engines": {
     "node": ">=22.6"
@@ -25,6 +26,12 @@
   ],
   "dependencies": {
     "pg": "^8.23.0",
+    "pg-logical-replication": "^2.5.0",
     "snowflake-sdk": "^3.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.3",
+    "@types/pg": "^8.23.1",
+    "typescript": "^6.0.3"
   }
 }
