@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { applyRelayTransaction, mergeRelayJournal, type RelayChange } from "../src/relay.ts";
+import pg from "pg";
+import { applyRelayTransaction, assessRelayBarrier, configureLosslessPgoutputTypes, lsnToBytes, mergeRelayJournal, renderRelayBarrier, type RelayChange } from "../src/relay.ts";
 import type { QueryClient } from "../src/clients.ts";
 import type { Config } from "../src/types.ts";
 
@@ -45,6 +46,8 @@ test("commits target changes and transaction ledger atomically", async () => {
   assert.equal(client.ledgerCommitted, true);
   assert.match(client.calls.find((call) => /MERGE INTO/.test(call.sql))?.sql ?? "", /_SNOWFLAKE_UPDATED_AT = CURRENT_TIMESTAMP/);
   assert.match(client.calls.find((call) => /MERGE INTO/.test(call.sql))?.sql ?? "", /_SNOWFLAKE_INSERTED_AT/);
+  const ledgerInsert = client.calls.find((call) => /INSERT INTO RAW\.FLOWPROOF_RELAY_TRANSACTIONS/.test(call.sql));
+  assert.equal(ledgerInsert?.binds[3], lsnToBytes("0/ABC").toString());
   assert.equal(client.calls.at(-1)?.sql, "COMMIT");
 });
 
@@ -86,6 +89,53 @@ test("simulated Openflow capture commits a journal before destination merge", as
   assert.equal(client.calls.filter((call) => /INSERT INTO RAW\.FLOWPROOF_OPENFLOW_SIM_JOURNAL/.test(call.sql)).length, 1);
   assert.equal(client.calls.filter((call) => /MERGE INTO RAW\.ORDERS/.test(call.sql)).length, 0);
   assert.equal(client.calls.at(-1)?.sql, "COMMIT");
+});
+
+test("pgoutput preserves PostgreSQL temporal microseconds as exact text", () => {
+  configureLosslessPgoutputTypes();
+  const value = "2026-08-24 04:29:23.928577+00";
+  assert.equal(pg.types.getTypeParser(1184, "text")(value), value);
+  assert.equal(pg.types.getTypeParser(1114, "text")("2026-08-24 04:29:23.123456"), "2026-08-24 04:29:23.123456");
+});
+
+test("converts PostgreSQL LSNs into monotonically comparable WAL offsets", () => {
+  assert.equal(lsnToBytes("0/019742A0"), 26_690_208n);
+  assert.ok(lsnToBytes("1/00000000") > lsnToBytes("0/FFFFFFFF"));
+  assert.throws(() => lsnToBytes("not-an-lsn"), /Invalid PostgreSQL LSN/);
+});
+
+test("barrier output refuses deletion reconciliation while a transaction is pending", () => {
+  const output = renderRelayBarrier(assessRelayBarrier("0/019742A0", "0/019742A0", 1, 1, "26690208"));
+  assert.match(output, /FAIL/);
+  assert.match(output, /Do not treat deletion reconciliation as complete/);
+});
+
+test("barrier passes only with acknowledgement, exact ledger evidence, and all prior merges", () => {
+  assert.equal(assessRelayBarrier("0/019742A0", "0/019742A0", 1, 0, "26690208").status, "pass");
+  assert.equal(assessRelayBarrier("0/019742A0", "0/0197429F", 1, 0, "26690208").status, "fail");
+  assert.equal(assessRelayBarrier("0/019742A0", "0/019742A0", 0, 0, "26690208").status, "fail");
+  assert.equal(assessRelayBarrier("0/019742A0", "0/019742A0", 1, 0, "26690207").status, "fail");
+});
+
+test("simulated journal and destination binds retain timestamp microseconds", async () => {
+  const timestamp = "2026-08-24 04:29:23.928577+00";
+  const capture = new SimulatedFake();
+  const preciseInsert = {
+    tag: "insert",
+    relation: relation(),
+    new: { id: "6", status: "paid", amount: "12.00", updated_at: timestamp },
+  } as RelayChange;
+  await applyRelayTransaction(capture, simulatedConfig, { xid: 51, commitLsn: "0/B01", changes: [preciseInsert] });
+  const journalInsert = capture.calls.find((call) => /INSERT INTO RAW\.FLOWPROOF_OPENFLOW_SIM_JOURNAL/.test(call.sql));
+  assert.match(String(journalInsert?.binds[7]), /04:29:23\.928577/);
+
+  const merge = new SimulatedFake([{
+    source_schema: "public", source_table: "orders", operation: "insert", primary_keys: { id: "6" },
+    payload: { id: "6", status: "paid", amount: "12.00", updated_at: timestamp }, old_values: null,
+  }]);
+  await mergeRelayJournal(merge, simulatedConfig, 1);
+  const targetMerge = merge.calls.find((call) => /MERGE INTO RAW\.ORDERS/.test(call.sql));
+  assert.equal(targetMerge?.binds.at(-1), timestamp);
 });
 
 test("simulated Openflow merge applies journal rows and marks the ledger atomically", async () => {

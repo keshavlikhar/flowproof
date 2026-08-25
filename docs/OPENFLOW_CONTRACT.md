@@ -31,6 +31,8 @@ Official sources:
 | Asynchronous application | `relay-merge` reads committed journal events later and updates the target in a separate transaction. |
 | Merge retry | Target DML and the ledger's `merged_at` marker commit or roll back together. |
 | Destination shape | Inserts, updates, soft deletes, and configured inserted/updated/deleted metadata are exercised. |
+| Simulator reconciliation barrier | `relay-barrier` compares PostgreSQL's acknowledged LSN with numeric ledger LSNs and refuses reconciliation while any transaction through the boundary is unmerged. |
+| Temporal precision | PostgreSQL date/time values remain exact text through pgoutput and retain all six supported microsecond digits. |
 
 The simulation journal is deliberately named `FLOWPROOF_OPENFLOW_SIM_JOURNAL`. It is a generic transaction journal, not a copy of Openflow's internal per-table `<table>_JOURNAL_<epoch>_<schema_generation>` tables.
 
