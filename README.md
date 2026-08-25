@@ -141,8 +141,19 @@ For each PostgreSQL transaction, the relay:
 4. Appends changes to a simulation journal and writes the ledger record atomically.
 5. Only after that durable commit acknowledges the commit LSN to PostgreSQL.
 6. A separate `relay-merge` operation later applies inserts, updates, and soft deletes and marks the ledger row merged in one transaction.
+7. PostgreSQL temporal values stay as exact text at the WAL boundary, avoiding JavaScript's millisecond-only `Date` precision.
 
 If the process loses its connection after journal commit but before acknowledgement, PostgreSQL sends the transaction again. The ledger makes the second capture a no-op, after which the relay safely acknowledges it. A failed destination merge remains pending and can be retried. The relay must run as one instance per slot; Snowflake primary-key declarations are informational and do not provide concurrency control.
+
+After a merge, evaluate the exact commit LSN printed by `relay-run`:
+
+```bash
+node --env-file=.env src/cli.ts relay-barrier \
+  --config evidence/flowproof.local.json \
+  --lsn 0/019742A0
+```
+
+A passing barrier proves that PostgreSQL acknowledged through that commit, the exact commit exists in the durable ledger, and no transaction through it remains unmerged. Run a settled broad-window reconciliation after the barrier to include old rows and soft deletes. This is evidence for the test relay only; a production Openflow gate needs equivalent runtime evidence from Openflow processor/journal state.
 
 Inspect the honest coverage matrix at any time:
 
@@ -179,7 +190,7 @@ Snowflake `ACCOUNT_USAGE` data can lag, and its database role must be granted se
 
 - A runtime-observed Openflow source-commit-LSN to final Snowflake-row mapping
 - Actual Openflow queue and journal-to-destination merge progress collectors
-- A write-assisted barrier mode for strongest end-to-end latency proof
+- A production Openflow source-LSN-to-merge barrier (the native simulator now has its own ledger barrier)
 - GitHub Checks or Slack delivery
 - Concurrent relay instances and arbitrary PostgreSQL types/schema evolution in the test relay
 

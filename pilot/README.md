@@ -96,6 +96,8 @@ node src/cli.ts openflow-contract \
 
 In a Snowsight worksheet, open `pilot/snowflake/setup_relay.sql`, replace its password placeholder with a new password that is different from the reader password, and run the whole file. This is the only required browser step.
 
+If the relay was set up before LSN barriers were added, run `pilot/snowflake/upgrade_relay_barrier.sql` once instead. It only adds and backfills the sortable LSN column; it does not touch either user's password.
+
 Add the relay credentials to the ignored root `.env`:
 
 ```text
@@ -146,6 +148,16 @@ node --env-file=.env src/cli.ts relay-merge \
 
 Now the destination insert/update/soft-delete changes should be visible, and each ledger row should have `merged_at` populated.
 
+Use the last commit LSN printed by `relay-run` as the reconciliation barrier:
+
+```bash
+node --env-file=.env src/cli.ts relay-barrier \
+  --config evidence/flowproof.local.json \
+  --lsn <last-commit-lsn>
+```
+
+`PASS` means PostgreSQL acknowledged through that transaction, its exact record is durable in Snowflake, and every ledger transaction through the boundary is merged. Only after this passes should a broad, settled `verify` window be used to reconcile active rows and soft deletes. This does not prove Openflow's processor state.
+
 ### Prove replay after a capture-side network-shaped failure
 
 Start a one-transaction relay that deliberately fails after the Snowflake commit but before PostgreSQL acknowledgement:
@@ -192,7 +204,7 @@ What this still cannot prove:
 - Openflow's own durable state maps a source commit-LSN to a destination row.
 - Openflow journal/merge queues and SPCS runtime stayed healthy.
 - Snowpipe Streaming committed-offset behavior, snapshot orchestration, schema generations, and TOAST handling match the documentation in the deployed version.
-- Deletes are fully reconciled by a freshness window; a transaction/LSN barrier is still needed for that stronger proof.
+- The native simulator's barrier is not an Openflow barrier. A real pilot still needs a source-LSN mapping exposed or derived from Openflow processor, journal, and destination metadata.
 
 ## Stop the pilot
 

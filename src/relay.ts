@@ -14,6 +14,59 @@ export interface RelayTransaction {
   changes: RelayChange[];
 }
 
+export interface RelayBarrierResult {
+  status: "pass" | "fail";
+  barrierLsn: string;
+  barrierLsnBytes: string;
+  confirmedFlushLsn?: string;
+  captureAcknowledged: boolean;
+  barrierRecorded: boolean;
+  pendingTransactions: number;
+  maxMergedLsnBytes?: string;
+}
+
+// PostgreSQL stores timestamps with microsecond precision, while JavaScript Date
+// stores only milliseconds. pg-logical-replication obtains its decoders from this
+// shared pg.types registry, so keep temporal values as their original text at the
+// WAL boundary. Snowflake then receives the complete value (for example,
+// 2026-08-24 04:29:23.928577+00) instead of a rounded Date.
+const POSTGRES_TEMPORAL_OIDS = [1082, 1083, 1114, 1184, 1266] as const;
+
+export function configureLosslessPgoutputTypes(): void {
+  for (const oid of POSTGRES_TEMPORAL_OIDS) pg.types.setTypeParser(oid, (value: string) => value);
+}
+
+export function lsnToBytes(lsn: string): bigint {
+  const match = /^([0-9A-F]+)\/([0-9A-F]+)$/i.exec(lsn.trim());
+  if (!match) throw new Error(`Invalid PostgreSQL LSN: ${lsn}`);
+  return (BigInt(`0x${match[1]}`) << 32n) + BigInt(`0x${match[2]}`);
+}
+
+export function assessRelayBarrier(
+  barrierLsn: string,
+  confirmedFlushLsn: string | undefined,
+  barrierRecords: number,
+  pendingTransactions: number,
+  maxMergedLsnBytes: string | undefined,
+): RelayBarrierResult {
+  const barrierBytes = lsnToBytes(barrierLsn);
+  if (!Number.isSafeInteger(barrierRecords) || barrierRecords < 0) throw new Error("Snowflake returned an invalid barrier record count");
+  if (!Number.isSafeInteger(pendingTransactions) || pendingTransactions < 0) throw new Error("Snowflake returned an invalid pending transaction count");
+  const captureAcknowledged = confirmedFlushLsn !== undefined && lsnToBytes(confirmedFlushLsn) >= barrierBytes;
+  const barrierRecorded = barrierRecords > 0;
+  const mergedThroughBarrier = maxMergedLsnBytes !== undefined && BigInt(maxMergedLsnBytes) >= barrierBytes;
+  return {
+    status: captureAcknowledged && barrierRecorded && pendingTransactions === 0 && mergedThroughBarrier ? "pass" : "fail",
+    barrierLsn,
+    barrierLsnBytes: barrierBytes.toString(),
+    confirmedFlushLsn,
+    captureAcknowledged,
+    barrierRecorded,
+    pendingTransactions,
+    maxMergedLsnBytes,
+  };
+}
+
 function required(environment: NodeJS.ProcessEnv, name: string): string {
   const value = environment[name];
   if (!value) throw new Error(`Missing required environment variable: ${name}`);
@@ -235,8 +288,8 @@ export async function applyRelayTransaction(
       for (const change of transaction.changes) await applyChange(client, config, change);
     }
     await client.query(
-      `INSERT INTO ${ledger} (transaction_id, source_xid, commit_lsn, change_count, committed_at, merged_at) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP(), ${workflow === "direct" ? "CURRENT_TIMESTAMP()" : "NULL"})`,
-      [transactionId, transaction.xid, transaction.commitLsn, transaction.changes.length],
+      `INSERT INTO ${ledger} (transaction_id, source_xid, commit_lsn, commit_lsn_bytes, change_count, committed_at, merged_at) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP(), ${workflow === "direct" ? "CURRENT_TIMESTAMP()" : "NULL"})`,
+      [transactionId, transaction.xid, transaction.commitLsn, lsnToBytes(transaction.commitLsn).toString(), transaction.changes.length],
     );
     if (failurePoint === "before-snowflake-commit") throw new Error("Injected failure before Snowflake commit");
     await client.query("COMMIT");
@@ -262,7 +315,7 @@ export async function mergeRelayJournal(
   const journal = qualifiedTable(config.relay.snowflakeJournalTable);
   if (!Number.isSafeInteger(maxTransactions) || maxTransactions < 1) throw new Error("maxTransactions must be a positive integer");
   const pending = await client.query(
-    `SELECT transaction_id, source_xid, commit_lsn FROM ${ledger} WHERE merged_at IS NULL ORDER BY committed_at, transaction_id LIMIT ${maxTransactions}`,
+    `SELECT transaction_id, source_xid, commit_lsn FROM ${ledger} WHERE merged_at IS NULL ORDER BY commit_lsn_bytes NULLS FIRST, committed_at, transaction_id LIMIT ${maxTransactions}`,
   );
   let merged = 0;
   for (const transaction of pending.rows) {
@@ -297,7 +350,7 @@ export async function setupRelay(config: Config, environment: NodeJS.ProcessEnv 
   try {
     await postgres.connect();
     const ledger = qualifiedTable(config.relay.snowflakeLedgerTable);
-    await snowflake.query(`SELECT transaction_id, source_xid, commit_lsn, change_count, committed_at, merged_at FROM ${ledger} WHERE 1 = 0`);
+    await snowflake.query(`SELECT transaction_id, source_xid, commit_lsn, commit_lsn_bytes, change_count, committed_at, merged_at FROM ${ledger} WHERE 1 = 0`);
     messages.push(`Snowflake ledger ${ledger} is ready`);
     if (config.relay.workflow === "openflow-simulated") {
       if (!config.relay.snowflakeJournalTable) throw new Error("config.relay.snowflakeJournalTable is required");
@@ -315,6 +368,57 @@ export async function setupRelay(config: Config, environment: NodeJS.ProcessEnv 
     await Promise.allSettled([postgres.end(), snowflake.close()]);
   }
   return messages;
+}
+
+export async function evaluateRelayBarrier(
+  config: Config,
+  barrierLsn: string,
+  environment: NodeJS.ProcessEnv = process.env,
+): Promise<RelayBarrierResult> {
+  if (!config.relay) throw new Error("config.relay is required");
+  const barrierBytes = lsnToBytes(barrierLsn);
+  const postgres = new pg.Client({ connectionString: required(environment, "FLOWPROOF_RELAY_POSTGRES_URL"), application_name: "flowproof-test-relay-barrier" });
+  const snowflake = relaySnowflakeClient(environment);
+  try {
+    await postgres.connect();
+    const slot = await postgres.query(
+      "SELECT confirmed_flush_lsn::text AS confirmed_flush_lsn FROM pg_replication_slots WHERE slot_name = $1 AND slot_type = 'logical'",
+      [config.relay.postgresSlotName],
+    );
+    const confirmedValue = field(slot.rows[0] ?? {}, "confirmed_flush_lsn");
+    const confirmedFlushLsn = confirmedValue === null || confirmedValue === undefined ? undefined : String(confirmedValue);
+    const ledger = qualifiedTable(config.relay.snowflakeLedgerTable);
+    const result = await snowflake.query(
+      `SELECT COUNT_IF(commit_lsn_bytes = ?) AS barrier_records,
+              COUNT_IF(commit_lsn_bytes <= ? AND merged_at IS NULL) AS pending_transactions,
+              MAX(IFF(commit_lsn_bytes <= ? AND merged_at IS NOT NULL, commit_lsn_bytes, NULL))::VARCHAR AS max_merged_lsn_bytes
+       FROM ${ledger}`,
+      [barrierBytes.toString(), barrierBytes.toString(), barrierBytes.toString()],
+    );
+    const row = result.rows[0] ?? {};
+    const barrierRecords = Number(field(row, "barrier_records"));
+    const pendingTransactions = Number(field(row, "pending_transactions"));
+    const mergedValue = field(row, "max_merged_lsn_bytes");
+    const maxMergedLsnBytes = mergedValue === null || mergedValue === undefined ? undefined : String(mergedValue);
+    return assessRelayBarrier(barrierLsn, confirmedFlushLsn, barrierRecords, pendingTransactions, maxMergedLsnBytes);
+  } finally {
+    await Promise.allSettled([postgres.end(), snowflake.close()]);
+  }
+}
+
+export function renderRelayBarrier(result: RelayBarrierResult): string {
+  const label = result.status.toUpperCase();
+  return [
+    `FlowProof relay barrier: ${label}`,
+    `Barrier: ${result.barrierLsn} (${result.barrierLsnBytes} WAL bytes)`,
+    `PostgreSQL acknowledged through barrier: ${result.captureAcknowledged ? "yes" : "no"}${result.confirmedFlushLsn ? ` (confirmed ${result.confirmedFlushLsn})` : ""}`,
+    `Exact barrier transaction in Snowflake ledger: ${result.barrierRecorded ? "yes" : "no"}`,
+    `Unmerged transactions through barrier: ${result.pendingTransactions}`,
+    `Snowflake merged through barrier: ${result.maxMergedLsnBytes ?? "none"}`,
+    result.status === "pass"
+      ? "Safe to run a settled source-to-target reconciliation through this boundary."
+      : "Do not treat deletion reconciliation as complete at this boundary.",
+  ].join("\n");
 }
 
 export async function runRelayMerge(
@@ -340,6 +444,7 @@ export async function runRelay(
   maxTransactions?: number,
 ): Promise<number> {
   if (!config.relay) throw new Error("config.relay is required");
+  configureLosslessPgoutputTypes();
   const client = relaySnowflakeClient(environment);
   const service = new LogicalReplicationService(
     { connectionString: required(environment, "FLOWPROOF_RELAY_POSTGRES_URL"), application_name: "flowproof-test-relay" },
