@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { checksumBucketPrefixLength, checksumQuery } from "../src/checksum.ts";
+import { checksumBucketPrefixLength, checksumQuery, compareFingerprints, fingerprintQuery, parseFingerprintRows } from "../src/checksum.ts";
 import type { Column, TableMapping } from "../src/types.ts";
 
 const mapping: TableMapping = {
@@ -18,10 +18,10 @@ const columns: Column[] = [
 ];
 
 test("builds matching deterministic bucket structure for PostgreSQL and Snowflake", () => {
-  const postgres = checksumQuery("postgres", mapping, columns, "public.orders", "updated_at >= $1");
-  const snowflake = checksumQuery("snowflake", mapping, columns, "RAW.ORDERS", "updated_at >= ?");
+  const postgres = checksumQuery("postgres", mapping, columns, columns, "public.orders", "updated_at >= $1");
+  const snowflake = checksumQuery("snowflake", mapping, columns, columns, "RAW.ORDERS", "updated_at >= ?");
   for (const sql of [postgres, snowflake]) {
-    assert.match(sql, /SUBSTR\(MD5\(key_text\), 1, 2\) AS bucket_id/);
+    assert.match(sql, /SUBSTR\(key_hash, 1, 2\) AS bucket_id/);
     assert.match(sql, /key_checksum/);
     assert.match(sql, /content_checksum/);
     assert.match(sql, /ORDER BY key_text, content_hash/);
@@ -45,5 +45,46 @@ test("increases checksum bucket width for large windows", () => {
 test("refuses unsupported checksum types instead of producing weak evidence", () => {
   const unsupported = [...columns, { name: "payload", type: "jsonb", nullable: true }];
   const withPayload = { ...mapping, checksumColumns: ["payload"] };
-  assert.throws(() => checksumQuery("postgres", withPayload, unsupported, "public.orders", "1=1"), /unsupported type jsonb/);
+  assert.throws(() => checksumQuery("postgres", withPayload, unsupported, unsupported, "public.orders", "1=1"), /unsupported type jsonb/);
+});
+
+test("compiles only allow-listed transformations and renamed target columns", () => {
+  const transformed: TableMapping = {
+    ...mapping,
+    checksumColumns: undefined,
+    targetPrimaryKey: ["order_id"],
+    columnComparisons: [
+      { source: "amount", target: "order_amount" },
+      { source: "status", target: "order_status", normalize: "uppercase-trim", valueMap: { P: "PAID", S: "SHIPPED" } },
+    ],
+  };
+  const source = [...columns, { name: "status", type: "text", nullable: false }];
+  const target: Column[] = [
+    { name: "order_id", type: "number", nullable: false },
+    { name: "order_amount", type: "number", nullable: false },
+    { name: "order_status", type: "varchar", nullable: false },
+  ];
+  const postgres = checksumQuery("postgres", transformed, source, source, "public.orders", "1=1");
+  const snowflake = checksumQuery("snowflake", transformed, source, target, "RAW.ORDERS", "1=1");
+  assert.match(postgres, /CASE status::text WHEN 'P' THEN 'PAID' WHEN 'S' THEN 'SHIPPED'/);
+  assert.match(postgres, /UPPER\(BTRIM\(/);
+  assert.match(snowflake, /TO_VARCHAR\(order_id\)/);
+  assert.match(snowflake, /UPPER\(TRIM\(TO_VARCHAR\(order_status\)\)\)/);
+  assert.doesNotMatch(snowflake, /WHEN 'P'/);
+});
+
+test("generates bounded fingerprint queries and classifies differences without raw keys", () => {
+  const sql = fingerprintQuery("postgres", mapping, columns, columns, "public.orders", "updated_at >= $1", "a1", 2, 101);
+  assert.match(sql, /SELECT 'a1' AS bucket_id, key_hash, content_hash/);
+  assert.match(sql, /LIMIT 101/);
+  assert.doesNotMatch(sql, /SELECT id[, ]/);
+  const source = parseFingerprintRows([
+    { bucket_id: "a1", key_hash: "11111111111111111111111111111111", content_hash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
+    { bucket_id: "a1", key_hash: "22222222222222222222222222222222", content_hash: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" },
+  ]);
+  const target = parseFingerprintRows([
+    { bucket_id: "a1", key_hash: "22222222222222222222222222222222", content_hash: "cccccccccccccccccccccccccccccccc" },
+    { bucket_id: "a1", key_hash: "33333333333333333333333333333333", content_hash: "dddddddddddddddddddddddddddddddd" },
+  ]);
+  assert.deepEqual(compareFingerprints("a1", source, target).map((difference) => difference.kind), ["missing-target", "content-mismatch", "unexpected-target"]);
 });

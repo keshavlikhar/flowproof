@@ -1,7 +1,7 @@
 {
   "version": 2,
   "pipeline": {
-    "name": "free-functional-pilot",
+    "name": "postgres-orders-to-transformed-snowflake",
     "policy": "pilot",
     "rowCountTolerancePercent": 0,
     "maxLagSeconds": 300,
@@ -14,23 +14,26 @@
     "maxMismatchBuckets": 5,
     "maxMismatchRowsPerBucket": 1000
   },
-  "relay": {
-    "testOnly": true,
-    "workflow": "openflow-simulated",
-    "postgresSlotName": "flowproof_test_relay",
-    "postgresPublicationName": "flowproof_publication",
-    "snowflakeLedgerTable": "RAW.FLOWPROOF_RELAY_TRANSACTIONS",
-    "snowflakeJournalTable": "RAW.FLOWPROOF_OPENFLOW_SIM_JOURNAL"
-  },
   "tables": [
     {
       "source": "public.orders",
-      "target": "RAW.ORDERS",
+      "target": "ANALYTICS.ORDERS",
       "primaryKey": ["id"],
+      "targetPrimaryKey": ["order_id"],
       "freshnessColumn": "updated_at",
-      "checksumColumns": ["id", "status", "amount", "updated_at"],
+      "targetFreshnessColumn": "source_updated_at",
+      "columnComparisons": [
+        { "source": "id", "target": "order_id" },
+        {
+          "source": "status_code",
+          "target": "status",
+          "normalize": "uppercase-trim",
+          "valueMap": { "P": "PAID", "S": "SHIPPED" }
+        },
+        { "source": "amount", "target": "order_amount" },
+        { "source": "updated_at", "target": "source_updated_at" }
+      ],
       "targetSoftDeleteColumn": "_SNOWFLAKE_DELETED",
-      "targetInsertTimestampColumn": "_SNOWFLAKE_INSERTED_AT",
       "targetApplyTimestampColumn": "_SNOWFLAKE_UPDATED_AT"
     }
   ]

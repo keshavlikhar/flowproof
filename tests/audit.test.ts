@@ -157,3 +157,38 @@ test("does not pass an incomplete cost component inventory", () => {
   assert.equal(result?.status, "unknown");
   assert.match(result?.evidence.find((item) => item.label === "missing cost components")?.observed ?? "", /storage/);
 });
+
+test("uses the declared transformed-column contract and explains bounded differences", () => {
+  const transformed = structuredClone(config);
+  transformed.tables[0].columnComparisons = [
+    { source: "id", target: "order_id" },
+    { source: "status_code", target: "status", normalize: "uppercase-trim", valueMap: { P: "PAID" } },
+  ];
+  const input = snapshot();
+  input.source.tables["public.orders"].columns = [
+    { name: "id", type: "bigint", nullable: false },
+    { name: "status_code", type: "text", nullable: false },
+    { name: "updated_at", type: "timestamp with time zone", nullable: false },
+  ];
+  input.target.tables["RAW.ORDERS"].columns = [
+    { name: "order_id", type: "number", nullable: false },
+    { name: "status", type: "varchar", nullable: false },
+    { name: "updated_at", type: "timestamp_tz", nullable: false },
+  ];
+  input.target.tables["RAW.ORDERS"].checksumBuckets![0].contentChecksum = "different";
+  input.target.tables["RAW.ORDERS"].reconciliationDetails = {
+    privacy: "hashed-primary-key",
+    mismatchedBucketCount: 1,
+    inspectedBucketCount: 1,
+    complete: true,
+    skippedBuckets: [],
+    differences: [{ bucketId: "a1", keyFingerprint: "11111111111111111111111111111111", kind: "content-mismatch", sourceRowCount: 1, targetRowCount: 1 }],
+  };
+  const report = audit(transformed, input);
+  const schema = report.results.find((result) => result.dimension === "schema");
+  const correctness = report.results.find((result) => result.dimension === "correctness");
+  assert.equal(schema?.status, "pass");
+  assert.equal(correctness?.status, "fail");
+  assert.match(correctness?.evidence.find((item) => item.label === "comparison contract")?.observed ?? "", /accepted value mapping/);
+  assert.match(correctness?.evidence.find((item) => item.label === "bounded mismatch detail")?.observed ?? "", /1 content-mismatch/);
+});

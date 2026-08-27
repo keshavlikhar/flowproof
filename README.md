@@ -82,6 +82,17 @@ The live collector retrieves:
 
 Checksums are computed inside each database from a canonical representation; raw rows are not uploaded to FlowProof. Bucket width grows for large windows, and `reconciliation.maxRowsPerTable` prevents an unexpected checksum scan. If a configured type cannot be normalized safely, checksum evidence is omitted and the result is `UNKNOWN`.
 
+When a checksum fails, the collector can inspect a small number of bounded buckets. It retrieves only MD5 key/content fingerprints—not raw primary keys or row values—and classifies them as `missing-target`, `unexpected-target`, or `content-mismatch`. Defaults are five buckets and 1,000 rows per side per bucket; larger buckets remain explicitly unresolved:
+
+```json
+{
+  "reconciliation": {
+    "maxMismatchBuckets": 5,
+    "maxMismatchRowsPerBucket": 1000
+  }
+}
+```
+
 Version 2 also requires a settled window. It compares the requested end time with both database clocks and the configured delay, then fingerprints the source again after target collection:
 
 ```json
@@ -104,6 +115,33 @@ The Openflow-specific table settings look like this:
   "targetApplyTimestampColumn": "_SNOWFLAKE_UPDATED_AT"
 }
 ```
+
+## Deterministic transformation contracts
+
+CDC pipelines often rename or normalize data. FlowProof can compare the intended output instead of requiring byte-for-byte raw equality. The supported contract is deliberately small: column renames, primary-key/freshness renames, case/whitespace normalization, and explicit source-to-target text value maps.
+
+```json
+{
+  "source": "public.orders",
+  "target": "ANALYTICS.ORDERS",
+  "primaryKey": ["id"],
+  "targetPrimaryKey": ["order_id"],
+  "freshnessColumn": "updated_at",
+  "targetFreshnessColumn": "source_updated_at",
+  "columnComparisons": [
+    { "source": "id", "target": "order_id" },
+    {
+      "source": "status_code",
+      "target": "status",
+      "normalize": "uppercase-trim",
+      "valueMap": { "P": "PAID", "S": "SHIPPED" }
+    },
+    { "source": "amount", "target": "order_amount" }
+  ]
+}
+```
+
+The value map is applied to the source; normalization is applied to both sides. An undeclared value or difference remains different and fails the checksum. `columnComparisons` defines the compared data contract and cannot be combined with legacy `checksumColumns`. Arbitrary SQL, JavaScript callbacks, fuzzy matching, and numeric tolerances are intentionally unsupported because they could hide real corruption or execute unsafe customer-supplied logic.
 
 Configure the replication slot name shown in the Openflow `CaptureChangePostgreSQL` processor state:
 
@@ -193,6 +231,7 @@ Snowflake `ACCOUNT_USAGE` data can lag, and its database role must be granted se
 - A production Openflow source-LSN-to-merge barrier (the native simulator now has its own ledger barrier)
 - GitHub Checks or Slack delivery
 - Concurrent relay instances and arbitrary PostgreSQL types/schema evolution in the test relay
+- Row-value disclosure and automatic diagnosis for mismatch buckets above configured inspection limits
 
 The free pilot proves FlowProof's evaluator and tests its documentation-derived contract model. Only an actual Openflow design-partner environment can validate the Openflow-specific behavior.
 

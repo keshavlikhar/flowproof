@@ -1,4 +1,5 @@
 import type { Config, TableMapping } from "./types.ts";
+import { targetFreshness, targetPrimaryKeys } from "./mapping.ts";
 
 function splitTable(name: string): [string, string] {
   const parts = name.split(".");
@@ -32,8 +33,8 @@ function postgresFor(mapping: TableMapping): string[] {
 
 function snowflakeFor(mapping: TableMapping): string[] {
   const [schema, table] = splitTable(mapping.target);
-  const keys = mapping.primaryKey.map(identifier);
-  const freshnessColumn = identifier(mapping.freshnessColumn);
+  const keys = targetPrimaryKeys(mapping).map(identifier);
+  const freshnessColumn = identifier(targetFreshness(mapping));
   const softDelete = mapping.targetSoftDeleteColumn ? identifier(mapping.targetSoftDeleteColumn) : undefined;
   const applyTimestamp = mapping.targetApplyTimestampColumn ? identifier(mapping.targetApplyTimestampColumn) : undefined;
   const activePredicate = softDelete ? ` AND COALESCE(${softDelete}, FALSE) = FALSE` : "";
@@ -44,7 +45,7 @@ function snowflakeFor(mapping: TableMapping): string[] {
     `SELECT column_name, data_type, is_nullable, numeric_precision, numeric_scale, character_maximum_length, datetime_precision FROM INFORMATION_SCHEMA.COLUMNS WHERE table_schema = '${schema.toUpperCase()}' AND table_name = '${table.toUpperCase()}' ORDER BY ordinal_position;`,
     `SELECT COUNT(*) AS row_count, MAX(${freshnessColumn}) AS max_freshness${deliveryLag} FROM ${schema}.${table} WHERE ${freshnessColumn} >= TO_TIMESTAMP_TZ('<SINCE_ISO>') AND ${freshnessColumn} < TO_TIMESTAMP_TZ('<UNTIL_ISO>')${activePredicate};`,
     keys.length ? `SELECT COUNT(DISTINCT ${keys.join(", ")}) AS distinct_primary_keys FROM ${schema}.${table} WHERE ${freshnessColumn} >= TO_TIMESTAMP_TZ('<SINCE_ISO>') AND ${freshnessColumn} < TO_TIMESTAMP_TZ('<UNTIL_ISO>')${activePredicate};` : "-- No primary key configured.",
-    `-- The live collector applies the same active-row filter to deterministic key/content checksum buckets.`,
+    `-- The live collector applies the same active-row filter and declared deterministic transformations to key/content checksum buckets.`,
     `-- Cost evidence (ACCOUNT_USAGE can lag): query warehouse, serverless task, storage, and transfer usage for this pipeline's tagged resources.`,
   ];
 }

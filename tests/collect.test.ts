@@ -154,3 +154,80 @@ test("rejects an invalid collection window before querying databases", async () 
   assert.equal(postgres.calls.length, 0);
   assert.equal(snowflake.calls.length, 0);
 });
+
+test("drills into a small mismatched bucket using only hashed key fingerprints", async () => {
+  const postgres = new FakeClient([
+    [{ database_time: "2026-01-01T00:20:00Z", session_timezone: "UTC", database_version: "17.1" }],
+    [{ column_name: "id", data_type: "bigint", is_nullable: "NO" }],
+    [{ row_count: "2", distinct_primary_keys: "2", max_freshness: "2026-01-01T00:09:50Z" }],
+    [{ bucket_id: "a1", row_count: "2", key_checksum: "source-keys", content_checksum: "source-content" }],
+    [
+      { bucket_id: "a1", key_hash: "11111111111111111111111111111111", content_hash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
+      { bucket_id: "a1", key_hash: "22222222222222222222222222222222", content_hash: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" },
+    ],
+  ]);
+  const snowflake = new FakeClient([
+    [{ database_time: "2026-01-01T00:20:00Z", session_timezone: "UTC", database_version: "9.0" }],
+    [
+      { column_name: "ID", data_type: "NUMBER", is_nullable: "NO" },
+      { column_name: "_SNOWFLAKE_DELETED", data_type: "BOOLEAN", is_nullable: "NO" },
+      { column_name: "_SNOWFLAKE_UPDATED_AT", data_type: "TIMESTAMP_NTZ", is_nullable: "NO" },
+    ],
+    [{ row_count: 2, distinct_primary_keys: 2, max_freshness: "2026-01-01T00:09:30Z", min_delivery_lag_seconds: 10, p95_delivery_lag_seconds: 19, max_delivery_lag_seconds: 20, delivery_lag_row_count: 2, missing_delivery_timestamp_count: 0 }],
+    [{ bucket_id: "a1", row_count: 2, key_checksum: "target-keys", content_checksum: "target-content" }],
+    [
+      { bucket_id: "a1", key_hash: "22222222222222222222222222222222", content_hash: "cccccccccccccccccccccccccccccccc" },
+      { bucket_id: "a1", key_hash: "33333333333333333333333333333333", content_hash: "dddddddddddddddddddddddddddddddd" },
+    ],
+  ]);
+  const snapshot = await collectSnapshot(config, { postgres, snowflake }, { since: "2026-01-01T00:00:00Z", until: "2026-01-01T00:10:00Z" }, {});
+  const detail = snapshot.target.tables["RAW.ORDERS"].reconciliationDetails;
+  assert.equal(detail?.complete, true);
+  assert.equal(detail?.inspectedBucketCount, 1);
+  assert.deepEqual(detail?.differences.map((difference) => difference.kind), ["missing-target", "content-mismatch", "unexpected-target"]);
+  assert.match(postgres.calls[4].sql, /SELECT 'a1' AS bucket_id, key_hash, content_hash/);
+  assert.doesNotMatch(postgres.calls[4].sql, /SELECT id[, ]/);
+});
+
+test("collects renamed and normalized transformation contracts on both systems", async () => {
+  const transformed = structuredClone(config);
+  transformed.tables[0] = {
+    source: "public.orders",
+    target: "RAW.ORDERS",
+    primaryKey: ["id"],
+    freshnessColumn: "updated_at",
+    columnComparisons: [
+      { source: "id", target: "order_id" },
+      { source: "status_code", target: "status", normalize: "uppercase-trim", valueMap: { P: "PAID" } },
+      { source: "updated_at", target: "source_updated_at" },
+    ],
+    targetApplyTimestampColumn: "_SNOWFLAKE_UPDATED_AT",
+  };
+  const postgres = new FakeClient([
+    [{ database_time: "2026-01-01T00:20:00Z", session_timezone: "UTC", database_version: "17.1" }],
+    [
+      { column_name: "id", data_type: "bigint", is_nullable: "NO" },
+      { column_name: "status_code", data_type: "text", is_nullable: "NO" },
+      { column_name: "updated_at", data_type: "timestamp with time zone", is_nullable: "NO" },
+    ],
+    [{ row_count: "1", distinct_primary_keys: "1", max_freshness: "2026-01-01T00:09:50Z" }],
+    [{ bucket_id: "a1", row_count: "1", key_checksum: "keys", content_checksum: "content" }],
+  ]);
+  const snowflake = new FakeClient([
+    [{ database_time: "2026-01-01T00:20:00Z", session_timezone: "UTC", database_version: "9.0" }],
+    [
+      { column_name: "ORDER_ID", data_type: "NUMBER", is_nullable: "NO" },
+      { column_name: "STATUS", data_type: "VARCHAR", is_nullable: "NO" },
+      { column_name: "SOURCE_UPDATED_AT", data_type: "TIMESTAMP_TZ", is_nullable: "NO" },
+      { column_name: "_SNOWFLAKE_UPDATED_AT", data_type: "TIMESTAMP_TZ", is_nullable: "NO" },
+    ],
+    [{ row_count: 1, distinct_primary_keys: 1, max_freshness: "2026-01-01T00:09:50Z", min_delivery_lag_seconds: 5, p95_delivery_lag_seconds: 5, max_delivery_lag_seconds: 5, delivery_lag_row_count: 1, missing_delivery_timestamp_count: 0 }],
+    [{ bucket_id: "a1", row_count: 1, key_checksum: "keys", content_checksum: "content" }],
+  ]);
+  await collectSnapshot(transformed, { postgres, snowflake }, { since: "2026-01-01T00:00:00Z", until: "2026-01-01T00:10:00Z" }, {});
+  assert.match(postgres.calls[3].sql, /CASE status_code::text WHEN 'P' THEN 'PAID'/);
+  assert.match(snowflake.calls[2].sql, /COUNT\(DISTINCT order_id\)/);
+  assert.match(snowflake.calls[2].sql, /MAX\(source_updated_at\)/);
+  assert.match(snowflake.calls[3].sql, /TO_VARCHAR\(order_id\)/i);
+  assert.match(snowflake.calls[3].sql, /UPPER\(TRIM\(TO_VARCHAR\(status\)\)\)/i);
+});

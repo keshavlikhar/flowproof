@@ -55,6 +55,14 @@ export function validateConfig(value: unknown): asserts value is Config {
     if (value.reconciliation.sourceStabilityCheck !== undefined && typeof value.reconciliation.sourceStabilityCheck !== "boolean") {
       throw new Error("config.reconciliation.sourceStabilityCheck must be a boolean");
     }
+    optionalFiniteNonNegative(value.reconciliation.maxMismatchBuckets, "config.reconciliation.maxMismatchBuckets");
+    if (value.reconciliation.maxMismatchBuckets !== undefined && !Number.isSafeInteger(value.reconciliation.maxMismatchBuckets)) {
+      throw new Error("config.reconciliation.maxMismatchBuckets must be a non-negative safe integer");
+    }
+    optionalFiniteNonNegative(value.reconciliation.maxMismatchRowsPerBucket, "config.reconciliation.maxMismatchRowsPerBucket");
+    if (value.reconciliation.maxMismatchRowsPerBucket !== undefined && (!Number.isSafeInteger(value.reconciliation.maxMismatchRowsPerBucket) || value.reconciliation.maxMismatchRowsPerBucket < 1)) {
+      throw new Error("config.reconciliation.maxMismatchRowsPerBucket must be a positive safe integer");
+    }
   }
   if (value.replication !== undefined) {
     object(value.replication, "config.replication");
@@ -86,13 +94,63 @@ export function validateConfig(value: unknown): asserts value is Config {
     if (!Array.isArray(mapping.primaryKey) || ((value.version === 2 || value.relay !== undefined) && mapping.primaryKey.length === 0) || mapping.primaryKey.some((key) => typeof key !== "string" || !key)) {
       throw new Error(`config.tables[${index}].primaryKey must be an array of column names`);
     }
+    if (mapping.targetPrimaryKey !== undefined && (!Array.isArray(mapping.targetPrimaryKey) || mapping.targetPrimaryKey.length !== mapping.primaryKey.length || mapping.targetPrimaryKey.some((key) => typeof key !== "string" || !key))) {
+      throw new Error(`config.tables[${index}].targetPrimaryKey must contain one target column for every source primary-key column`);
+    }
     if (mapping.checksumColumns !== undefined && (!Array.isArray(mapping.checksumColumns) || mapping.checksumColumns.length === 0 || mapping.checksumColumns.some((column) => typeof column !== "string" || !column))) {
       throw new Error(`config.tables[${index}].checksumColumns must be a non-empty array of column names`);
     }
-    for (const field of ["targetSoftDeleteColumn", "targetInsertTimestampColumn", "targetApplyTimestampColumn"] as const) {
+    if (mapping.columnComparisons !== undefined) {
+      if (mapping.checksumColumns !== undefined) throw new Error(`config.tables[${index}] cannot combine checksumColumns and columnComparisons`);
+      if (!Array.isArray(mapping.columnComparisons) || mapping.columnComparisons.length === 0) throw new Error(`config.tables[${index}].columnComparisons must be a non-empty array`);
+      const comparisons = mapping.columnComparisons as Array<Record<string, unknown>>;
+      const primaryKey = mapping.primaryKey as string[];
+      const freshnessColumn = mapping.freshnessColumn as string;
+      const sourceNames = new Set<string>();
+      const targetNames = new Set<string>();
+      for (const [comparisonIndex, comparison] of comparisons.entries()) {
+        object(comparison, `config.tables[${index}].columnComparisons[${comparisonIndex}]`);
+        if (typeof comparison.source !== "string" || !comparison.source) throw new Error(`config.tables[${index}].columnComparisons[${comparisonIndex}].source is required`);
+        if (comparison.target !== undefined && (typeof comparison.target !== "string" || !comparison.target)) throw new Error(`config.tables[${index}].columnComparisons[${comparisonIndex}].target must be a column name`);
+        const sourceName = comparison.source.toLowerCase();
+        const targetName = String(comparison.target ?? comparison.source).toLowerCase();
+        if (sourceNames.has(sourceName) || targetNames.has(targetName)) throw new Error(`config.tables[${index}].columnComparisons cannot contain duplicate source or target columns`);
+        sourceNames.add(sourceName);
+        targetNames.add(targetName);
+        if (comparison.normalize !== undefined && !["trim", "lowercase", "uppercase", "lowercase-trim", "uppercase-trim"].includes(String(comparison.normalize))) {
+          throw new Error(`config.tables[${index}].columnComparisons[${comparisonIndex}].normalize is unsupported`);
+        }
+        if (comparison.valueMap !== undefined) {
+          object(comparison.valueMap, `config.tables[${index}].columnComparisons[${comparisonIndex}].valueMap`);
+          const entries = Object.entries(comparison.valueMap);
+          if (!entries.length || entries.length > 100 || entries.some(([key, mapped]) => key.length > 256 || typeof mapped !== "string" || mapped.length > 256)) {
+            throw new Error(`config.tables[${index}].columnComparisons[${comparisonIndex}].valueMap must contain 1-100 string mappings of at most 256 characters`);
+          }
+        }
+        if (primaryKey.some((key) => key.toLowerCase() === String(comparison.source).toLowerCase()) && (comparison.normalize !== undefined || comparison.valueMap !== undefined)) {
+          throw new Error(`config.tables[${index}] primary-key transformations may rename columns but cannot normalize or remap key values`);
+        }
+      }
+      if (mapping.targetPrimaryKey) {
+        for (const [keyIndex, sourceKey] of primaryKey.entries()) {
+          const comparison = comparisons.find((item) => String(item.source).toLowerCase() === sourceKey.toLowerCase());
+          if (comparison?.target && String(comparison.target).toLowerCase() !== String(mapping.targetPrimaryKey[keyIndex]).toLowerCase()) {
+            throw new Error(`config.tables[${index}] has conflicting target mappings for primary-key column ${sourceKey}`);
+          }
+        }
+      }
+      const freshnessComparison = comparisons.find((item) => String(item.source).toLowerCase() === freshnessColumn.toLowerCase());
+      if (mapping.targetFreshnessColumn && freshnessComparison?.target && String(freshnessComparison.target).toLowerCase() !== String(mapping.targetFreshnessColumn).toLowerCase()) {
+        throw new Error(`config.tables[${index}] has conflicting target mappings for freshness column ${mapping.freshnessColumn}`);
+      }
+    }
+    for (const field of ["targetFreshnessColumn", "targetSoftDeleteColumn", "targetInsertTimestampColumn", "targetApplyTimestampColumn"] as const) {
       if (mapping[field] !== undefined && (typeof mapping[field] !== "string" || !mapping[field])) {
         throw new Error(`config.tables[${index}].${field} must be a column name`);
       }
+    }
+    if (value.relay !== undefined && (mapping.targetPrimaryKey !== undefined || mapping.targetFreshnessColumn !== undefined || mapping.columnComparisons !== undefined)) {
+      throw new Error(`config.tables[${index}] transformation contracts are verifier-only and are not supported by the test relay`);
     }
   }
   const sources = value.tables.map((mapping) => mapping.source.toLowerCase());
@@ -133,6 +191,25 @@ function validateTableObservations(value: unknown, label: string): void {
         bucketIds.add(bucket.id);
         finiteNonNegative(bucket.rowCount, `${label}.${tableName}.checksumBuckets[${index}].rowCount`);
         if (typeof bucket.keyChecksum !== "string" || typeof bucket.contentChecksum !== "string") throw new Error(`${label}.${tableName}.checksumBuckets[${index}] checksums are invalid`);
+      }
+    }
+    if (observation.reconciliationDetails !== undefined) {
+      object(observation.reconciliationDetails, `${label}.${tableName}.reconciliationDetails`);
+      if (observation.reconciliationDetails.privacy !== "hashed-primary-key" || typeof observation.reconciliationDetails.complete !== "boolean") {
+        throw new Error(`${label}.${tableName}.reconciliationDetails is invalid`);
+      }
+      finiteNonNegative(observation.reconciliationDetails.mismatchedBucketCount, `${label}.${tableName}.reconciliationDetails.mismatchedBucketCount`);
+      finiteNonNegative(observation.reconciliationDetails.inspectedBucketCount, `${label}.${tableName}.reconciliationDetails.inspectedBucketCount`);
+      if (!Array.isArray(observation.reconciliationDetails.differences) || !Array.isArray(observation.reconciliationDetails.skippedBuckets)) {
+        throw new Error(`${label}.${tableName}.reconciliationDetails collections are invalid`);
+      }
+      for (const [index, difference] of observation.reconciliationDetails.differences.entries()) {
+        object(difference, `${label}.${tableName}.reconciliationDetails.differences[${index}]`);
+        if (!/^[0-9a-f]{2,4}$/i.test(String(difference.bucketId)) || !/^[0-9a-f]{32}$/i.test(String(difference.keyFingerprint)) || !["missing-target", "unexpected-target", "content-mismatch"].includes(String(difference.kind))) {
+          throw new Error(`${label}.${tableName}.reconciliationDetails.differences[${index}] is invalid`);
+        }
+        finiteNonNegative(difference.sourceRowCount, `${label}.${tableName}.reconciliationDetails.differences[${index}].sourceRowCount`);
+        finiteNonNegative(difference.targetRowCount, `${label}.${tableName}.reconciliationDetails.differences[${index}].targetRowCount`);
       }
     }
   }

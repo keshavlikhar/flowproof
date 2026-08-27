@@ -24,9 +24,15 @@ flowproof.json
       └── JSON ─────── CI output
 ```
 
-`src/cli.ts` wires those pieces into `audit`, `plan`, `doctor`, `verify`, and `watch`. `src/clients.ts` is the only verifier module that owns database-driver connections. `src/checksum.ts` builds matching canonical checksum SQL for both databases. `src/policy.ts` decides which dimensions block the overall result.
+`src/cli.ts` wires those pieces into `audit`, `plan`, `doctor`, `verify`, and `watch`. `src/clients.ts` is the only verifier module that owns database-driver connections. `src/checksum.ts` builds matching canonical checksum SQL for both databases, compiles the allow-listed transformation contract, and classifies bounded fingerprint differences. `src/policy.ts` decides which dimensions block the overall result.
 
 The verifier does not decide by AI. Every result comes from deterministic evidence and a visible rule.
+
+## Transformation and mismatch rule
+
+Raw equality remains the default. A table can opt into a deterministic contract consisting only of column renames, text case/whitespace normalization, and explicit source-to-target value maps. The config validator rejects arbitrary expressions and ambiguous duplicate mappings. Source value maps are compiled into a fixed SQL `CASE`; normalization is applied on both databases before canonical framing and hashing.
+
+On a checksum failure, `collect.ts` inspects only mismatched buckets whose observed row counts are below the configured bound. It queries hashed primary-key and content fingerprints, never raw values. A bucket is classified only when both complete bounded result sets still match their earlier bucket counts; otherwise it is marked skipped because the evidence changed or was too large.
 
 ## Safe-window rule
 

@@ -41,6 +41,7 @@ export interface TableObservation {
   activeRowFilter?: string;
   stableDuringCollection?: boolean;
   stabilityEvidence?: string;
+  reconciliationDetails?: ReconciliationDetails;
 }
 
 export interface ChecksumBucket {
@@ -48,6 +49,34 @@ export interface ChecksumBucket {
   rowCount: number;
   keyChecksum: string;
   contentChecksum: string;
+}
+
+export type DifferenceKind = "missing-target" | "unexpected-target" | "content-mismatch";
+
+export interface RowDifference {
+  bucketId: string;
+  keyFingerprint: string;
+  kind: DifferenceKind;
+  sourceRowCount: number;
+  targetRowCount: number;
+}
+
+export interface ReconciliationDetails {
+  privacy: "hashed-primary-key";
+  mismatchedBucketCount: number;
+  inspectedBucketCount: number;
+  complete: boolean;
+  differences: RowDifference[];
+  skippedBuckets: Array<{ id: string; reason: string }>;
+}
+
+export type ColumnNormalization = "trim" | "lowercase" | "uppercase" | "lowercase-trim" | "uppercase-trim";
+
+export interface ColumnComparison {
+  source: string;
+  target?: string;
+  normalize?: ColumnNormalization;
+  valueMap?: Record<string, string>;
 }
 
 export interface CostObservation {
@@ -106,8 +135,11 @@ export interface TableMapping {
   source: string;
   target: string;
   primaryKey: string[];
+  targetPrimaryKey?: string[];
   freshnessColumn: string;
+  targetFreshnessColumn?: string;
   checksumColumns?: string[];
+  columnComparisons?: ColumnComparison[];
   targetSoftDeleteColumn?: string;
   targetInsertTimestampColumn?: string;
   targetApplyTimestampColumn?: string;
@@ -132,6 +164,8 @@ export interface Config {
     settleDelaySeconds?: number;
     maxRowsPerTable?: number;
     sourceStabilityCheck?: boolean;
+    maxMismatchBuckets?: number;
+    maxMismatchRowsPerBucket?: number;
   };
   replication?: ReplicationConfig;
   relay?: {

@@ -1,6 +1,16 @@
-import { checksumBucketPrefixLength, checksumQuery, parseChecksumBuckets } from "./checksum.ts";
+import {
+  checksumBucketPrefixLength,
+  checksumQuery,
+  compareFingerprints,
+  emptyReconciliationDetails,
+  fingerprintQuery,
+  mismatchedBucketIds,
+  parseChecksumBuckets,
+  parseFingerprintRows,
+} from "./checksum.ts";
 import type { Config, CostObservation, ReplicationObservation, Snapshot, SystemObservation, TableMapping, TableObservation } from "./types.ts";
 import type { LiveClients, QueryClient } from "./clients.ts";
+import { targetFreshness, targetPrimaryKeys } from "./mapping.ts";
 
 export interface CollectionWindow {
   since: string;
@@ -120,6 +130,7 @@ async function postgresObservation(client: QueryClient, mapping: TableMapping, w
       "postgres",
       mapping,
       observedColumns,
+      observedColumns,
       `${schema}.${name}`,
       `${freshness} >= $1::timestamptz AND ${freshness} < $2::timestamptz`,
       bucketPrefixLength,
@@ -157,8 +168,8 @@ async function snowflakeObservation(
   );
   const observedColumns = columns(columnsResult.rows);
   const targetColumnNames = new Set(observedColumns.map((column) => column.name.toLowerCase()));
-  const freshness = identifier(mapping.freshnessColumn);
-  const distinct = snowflakeDistinct(mapping.primaryKey);
+  const freshness = identifier(targetFreshness(mapping));
+  const distinct = snowflakeDistinct(targetPrimaryKeys(mapping));
   const softDelete = mapping.targetSoftDeleteColumn ? identifier(mapping.targetSoftDeleteColumn) : undefined;
   if (softDelete && !targetColumnNames.has(softDelete.toLowerCase())) {
     throw new Error(`Configured soft-delete column ${softDelete} is missing from ${mapping.target}`);
@@ -190,6 +201,7 @@ async function snowflakeObservation(
         "snowflake",
         mapping,
         sourceColumns,
+        observedColumns,
         `${schema}.${name}`,
         windowPredicate,
         sourceChecksumPrefixLength ?? checksumBucketPrefixLength(rowCount),
@@ -217,6 +229,55 @@ async function snowflakeObservation(
     checksumUnavailableReason,
     activeRowFilter: softDelete ? `${softDelete} = FALSE` : undefined,
   };
+}
+
+async function reconciliationDetails(
+  config: Config,
+  clients: LiveClients,
+  mapping: TableMapping,
+  source: TableObservation,
+  target: TableObservation,
+  window: CollectionWindow,
+): Promise<void> {
+  if (!source.checksumBuckets || !target.checksumBuckets || !source.checksumBucketPrefixLength) return;
+  const ids = mismatchedBucketIds(source.checksumBuckets, target.checksumBuckets);
+  if (!ids.length) return;
+  const details = emptyReconciliationDetails(ids.length);
+  target.reconciliationDetails = details;
+  const maxBuckets = config.reconciliation?.maxMismatchBuckets ?? 5;
+  const maxRows = config.reconciliation?.maxMismatchRowsPerBucket ?? 1000;
+  const sourceById = new Map(source.checksumBuckets.map((bucket) => [bucket.id, bucket]));
+  const targetById = new Map(target.checksumBuckets.map((bucket) => [bucket.id, bucket]));
+  const [sourceSchema, sourceTable] = table(mapping.source);
+  const [targetSchema, targetTable] = table(mapping.target);
+  const sourceFreshness = identifier(mapping.freshnessColumn);
+  const targetFreshnessColumn = identifier(targetFreshness(mapping));
+  const softDelete = mapping.targetSoftDeleteColumn ? identifier(mapping.targetSoftDeleteColumn) : undefined;
+  const sourcePredicate = `${sourceFreshness} >= $1::timestamptz AND ${sourceFreshness} < $2::timestamptz`;
+  const targetPredicate = `${targetFreshnessColumn} >= TO_TIMESTAMP_TZ(?) AND ${targetFreshnessColumn} < TO_TIMESTAMP_TZ(?)${softDelete ? ` AND COALESCE(${softDelete}, FALSE) = FALSE` : ""}`;
+  for (const id of ids) {
+    if (details.inspectedBucketCount >= maxBuckets) {
+      details.skippedBuckets.push({ id, reason: `inspection limit of ${maxBuckets} bucket(s) reached` });
+      continue;
+    }
+    const expectedRows = sourceById.get(id)?.rowCount ?? 0;
+    const observedRows = targetById.get(id)?.rowCount ?? 0;
+    if (expectedRows > maxRows || observedRows > maxRows) {
+      details.skippedBuckets.push({ id, reason: `bucket contains ${Math.max(expectedRows, observedRows)} row(s), above detail limit ${maxRows}` });
+      continue;
+    }
+    const sourceSql = fingerprintQuery("postgres", mapping, source.columns, source.columns, `${sourceSchema}.${sourceTable}`, sourcePredicate, id, source.checksumBucketPrefixLength, maxRows + 1);
+    const targetSql = fingerprintQuery("snowflake", mapping, source.columns, target.columns, `${targetSchema}.${targetTable}`, targetPredicate, id, source.checksumBucketPrefixLength, maxRows + 1);
+    const sourceRows = parseFingerprintRows((await clients.postgres.query(sourceSql, [window.since, window.until])).rows);
+    const targetRows = parseFingerprintRows((await clients.snowflake.query(targetSql, [window.since, window.until])).rows);
+    if (sourceRows.length !== expectedRows || targetRows.length !== observedRows || sourceRows.length > maxRows || targetRows.length > maxRows) {
+      details.skippedBuckets.push({ id, reason: "bucket changed between summary and bounded detail collection" });
+      continue;
+    }
+    details.inspectedBucketCount += 1;
+    details.differences.push(...compareFingerprints(id, sourceRows, targetRows));
+  }
+  details.complete = details.inspectedBucketCount === ids.length && details.skippedBuckets.length === 0;
 }
 
 async function replicationObservation(client: QueryClient, config: NonNullable<Config["replication"]>): Promise<ReplicationObservation> {
@@ -332,7 +393,7 @@ export async function collectSnapshot(
   for (const mapping of config.tables) {
     const sourceObservation = await postgresObservation(clients.postgres, mapping, window, maxRowsPerTable);
     source.tables[mapping.source] = sourceObservation;
-    target.tables[mapping.target] = await snowflakeObservation(
+    const targetObservation = await snowflakeObservation(
       clients.snowflake,
       mapping,
       sourceObservation.columns,
@@ -340,6 +401,8 @@ export async function collectSnapshot(
       sourceObservation.checksumUnavailableReason,
       window,
     );
+    target.tables[mapping.target] = targetObservation;
+    await reconciliationDetails(config, clients, mapping, sourceObservation, targetObservation, window);
     if (stabilityCheck) {
       const recheck = await postgresObservation(clients.postgres, mapping, window, maxRowsPerTable);
       const initialFingerprint = JSON.stringify({

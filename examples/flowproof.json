@@ -10,7 +10,9 @@
   "reconciliation": {
     "settleDelaySeconds": 120,
     "maxRowsPerTable": 1000000,
-    "sourceStabilityCheck": true
+    "sourceStabilityCheck": true,
+    "maxMismatchBuckets": 5,
+    "maxMismatchRowsPerBucket": 1000
   },
   "replication": {
     "postgresSlotName": "snowflake_connector_example",

@@ -10,6 +10,8 @@ import type {
   TableObservation,
 } from "./types.ts";
 import { resolvePolicy } from "./policy.ts";
+import { comparisonRuleDescriptions } from "./checksum.ts";
+import { targetColumn, targetFreshness, targetPrimaryKeys } from "./mapping.ts";
 
 const TYPE_FAMILIES: Record<string, string> = {
   smallint: "integer", bigint: "integer", int: "integer", integer: "integer", number: "number",
@@ -88,20 +90,42 @@ function bucketCoverageMatches(observation: TableObservation): boolean {
 
 function schemaCheck(mapping: TableMapping, source?: TableObservation, target?: TableObservation): CheckResult {
   if (!source || !target) return unknown("schema", mapping.target, "Schema could not be verified because table metadata is missing.", "Collect source and target column metadata.");
+  const sourceColumns = new Map(source.columns.map((column) => [column.name.toLowerCase(), column]));
   const targetColumns = new Map(target.columns.map((column) => [column.name.toLowerCase(), column]));
   const problems: string[] = [];
-  for (const sourceColumn of source.columns) {
-    const targetColumn = targetColumns.get(sourceColumn.name.toLowerCase());
-    if (!targetColumn) problems.push(`${sourceColumn.name} is missing`);
+  const defaultTargetName = (sourceName: string): string => {
+    const keyIndex = mapping.primaryKey.findIndex((name) => name.toLowerCase() === sourceName.toLowerCase());
+    if (keyIndex >= 0) return targetPrimaryKeys(mapping)[keyIndex];
+    if (sourceName.toLowerCase() === mapping.freshnessColumn.toLowerCase()) return targetFreshness(mapping);
+    return targetColumn(mapping, sourceName);
+  };
+  const comparisons = mapping.columnComparisons?.length
+    ? mapping.columnComparisons.map((comparison) => ({ source: comparison.source, target: comparison.target ?? comparison.source }))
+    : source.columns.map((column) => ({ source: column.name, target: defaultTargetName(column.name) }));
+  if (mapping.columnComparisons?.length) {
+    for (const [index, sourceKey] of mapping.primaryKey.entries()) {
+      if (!comparisons.some((comparison) => comparison.source.toLowerCase() === sourceKey.toLowerCase())) {
+        comparisons.push({ source: sourceKey, target: targetPrimaryKeys(mapping)[index] });
+      }
+    }
+    if (!comparisons.some((comparison) => comparison.source.toLowerCase() === mapping.freshnessColumn.toLowerCase())) {
+      comparisons.push({ source: mapping.freshnessColumn, target: targetFreshness(mapping) });
+    }
+  }
+  for (const comparison of comparisons) {
+    const sourceColumn = sourceColumns.get(comparison.source.toLowerCase());
+    const targetColumn = targetColumns.get(comparison.target.toLowerCase());
+    if (!sourceColumn) problems.push(`${comparison.source} is missing from source`);
+    else if (!targetColumn) problems.push(`${comparison.target} is missing from target`);
     else {
       const incompatibility = columnCompatibility(sourceColumn, targetColumn);
-      if (incompatibility) problems.push(`${sourceColumn.name}: ${incompatibility}`);
+      if (incompatibility) problems.push(`${comparison.source} -> ${comparison.target}: ${incompatibility}`);
     }
   }
   return {
     dimension: "schema", table: mapping.target, status: problems.length ? "fail" : "pass", blocking: false,
-    summary: problems.length ? `Schema mismatch: ${problems.join("; ")}.` : "Source columns are present with compatible target types and nullability.",
-    evidence: [{ label: "columns", expected: `${source.columns.length} compatible source columns`, observed: problems.length ? problems.join("; ") : "all compatible" }],
+    summary: problems.length ? `Schema mismatch: ${problems.join("; ")}.` : "Contract columns are present with compatible target types and nullability.",
+    evidence: [{ label: "columns", expected: `${comparisons.length} compatible contract columns`, observed: problems.length ? problems.join("; ") : "all compatible" }],
     recommendation: problems.length ? "Align the target table or explicitly approve and version the mapping." : undefined,
   };
 }
@@ -125,12 +149,23 @@ function correctnessCheck(mapping: TableMapping, source?: TableObservation, targ
   const checksumObserved = bucketChecksumsAvailable
     ? mismatchedBuckets.length ? `mismatch in buckets ${mismatchedBuckets.slice(0, 10).join(", ")}${mismatchedBuckets.length > 10 ? "…" : ""}` : `${source.checksumBuckets!.length} checksum bucket${source.checksumBuckets!.length === 1 ? "" : "s"} match`
     : target.checksum ?? target.checksumUnavailableReason ?? "not collected";
+  const rules = comparisonRuleDescriptions(mapping);
+  const detail = target.reconciliationDetails;
+  const detailKinds = detail?.differences.reduce<Record<string, number>>((counts, difference) => {
+    counts[difference.kind] = (counts[difference.kind] ?? 0) + 1;
+    return counts;
+  }, {});
+  const detailObserved = detail
+    ? `${detail.inspectedBucketCount}/${detail.mismatchedBucketCount} mismatched bucket(s) fully inspected; ${Object.entries(detailKinds ?? {}).map(([kind, count]) => `${count} ${kind}`).join(", ") || "no row-level difference classified"}; keys shown only as MD5 fingerprints${detail.complete ? "" : `; ${detail.skippedBuckets.length} bucket(s) skipped`}`
+    : undefined;
   return {
     dimension: "correctness", table: mapping.target, status, blocking: false,
     summary: status === "pass" ? "Counts and deterministic checksums match." : status === "fail" ? "Source and target contents do not reconcile." : "Counts match, but content equality is not proven without checksums.",
     evidence: [
       { label: "row count", expected: String(source.rowCount), observed: `${target.rowCount} (${differencePercent.toFixed(2)}% difference)` },
       { label: "content checksum", expected: bucketChecksumsAvailable ? "all deterministic buckets match" : source.checksum ?? "required", observed: checksumObserved },
+      ...(rules.length ? [{ label: "comparison contract", expected: "only declared deterministic transformations", observed: rules.join("; ") }] : []),
+      ...(detailObserved ? [{ label: "bounded mismatch detail", expected: "no differences", observed: detailObserved }] : []),
     ],
     recommendation: status !== "pass" ? "Compute deterministic bucket checksums over the same closed window, then inspect only mismatched buckets." : undefined,
   };
@@ -163,6 +198,11 @@ function deliveryIntegrityCheck(mapping: TableMapping, source?: TableObservation
       { label: "target duplicate keys", expected: "0", observed: String(targetDuplicates) },
       { label: "source-to-target key-count delta", expected: "0", observed: String(keyCountDelta) },
       { label: "key-set checksum", expected: "all deterministic buckets match", observed: keyChecksumsAvailable ? mismatchedBuckets.length ? `mismatch in ${mismatchedBuckets.join(", ")}` : "all buckets match" : "not collected" },
+      ...(target.reconciliationDetails ? [{
+        label: "key fingerprints",
+        expected: "no missing or unexpected keys",
+        observed: target.reconciliationDetails.differences.filter((difference) => difference.kind !== "content-mismatch").slice(0, 20).map((difference) => `${difference.kind}:${difference.keyFingerprint}`).join(", ") || "none classified",
+      }] : []),
     ],
     recommendation: status === "pass" ? undefined : status === "fail" ? "Inspect the mismatched buckets and reconcile their primary keys before advancing the proof window." : "Collect deterministic key checksums; equal counts alone cannot prove the same keys arrived.",
   };
